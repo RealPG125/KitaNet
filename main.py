@@ -2,16 +2,19 @@ import numpy as np
 import pyaudiowpatch as pyaudio
 import threading        # インプット用
 import queue
+import time
+import wave
 # import asyncio          # タスク用、検討
 # import websocket
 from faster_whisper import WhisperModel
+from scipy.signal import resample_poly
 
-MODEL = "base"          # 軽 → 重: "tiny" (75MB), "base" (142MB), "small" (466MB), "medium" (1.5GB), "large-v3" (3.0GB)
+MODEL = "small"          # 軽 → 重: "tiny" (75MB), "base" (142MB), "small" (466MB), "medium" (1.5GB), "large-v3" (3.0GB)
 DEVICE = "cuda"         # CPU: "cpu", Nvidia GPU: "cuda"
 
 SAMPLE_RATE_MIC = 16000
-CHUNK_DURATION = 1.0
-MAX_BUFFER_DURATION = 10
+CHUNK_DURATION = 2.0
+MAX_BUFFER_DURATION = 20
 
 class Mic:
     def __init__(self):
@@ -57,12 +60,13 @@ class Mic:
         self.start(sampleRate = sampleRate, deviceIndex = deviceIndex, chunkDuration = chunkDuration)
 
     def _loop(self):
-        print(f"Mic {self.deviceIndex}: started loop")
+        print(f"Mic {self.deviceIndex}: started loop with {self.sampleRate} hz sampling rate and {self.chunkLength} samples length chunk")
         while (self._running):
+            buffer = np.frombuffer(self._stream.read(self.chunkLength, exception_on_overflow = False), dtype = np.float32)
+            self.queueNormal.put(buffer)
             if (self._flatten):
-                self.queueFlattened.put(np.frombuffer(self._stream.read(self.chunkLength, exception_on_overflow = False), dtype = np.float32).reshape(-1, self.channels).mean(axis = 1))
-            self.queueNormal.put(np.frombuffer(self._stream.read(self.chunkLength, exception_on_overflow = False), dtype = np.float32))
-
+                self.queueFlattened.put(buffer.reshape(-1, self.channels).mean(axis = 1))
+            
     def stop(self):
         self._running = False
         self._stream.stop_stream()
@@ -109,6 +113,7 @@ class WhisperObject:
         return self._model.transcribe(audioData, beam_size = 5, vad_filter = True, task = "transcribe")
 
 
+
 def main():
     # init test
     # mic = Mic()
@@ -117,22 +122,37 @@ def main():
 
     # with buffer slice playback
     mic = Mic()
-    mic.start(sampleRate = SAMPLE_RATE_MIC, chunkDuration = CHUNK_DURATION)
-    speaker = Speaker(sampleRate = SAMPLE_RATE_MIC, channels = mic.channels)
+    # mic.start(sampleRate = SAMPLE_RATE_MIC, chunkDuration = CHUNK_DURATION)
+    mic.start_manual()
+    # speaker = Speaker(sampleRate = mic.sampleRate, channels = 2)
     model = WhisperObject(modelSize = "base", device = "cuda", computeType = "float16")
     audioBuffer = np.empty(0, dtype = np.float32)
 
     while True:
-        audioSliceNormal = mic.queueNormal.get()
         audioSliceFlattened = mic.queueFlattened.get()
-        speaker.play(audioSliceNormal.tobytes())
-        audioBuffer = np.concatenate((audioBuffer, audioSliceFlattened))
-        if (len(audioBuffer) > mic.sampleRate * 10):
-            audioBuffer = audioBuffer[-MAX_BUFFER_DURATION * mic.sampleRate:]
+        audioBuffer = np.concatenate((audioBuffer, resample_poly(audioSliceFlattened, 16000, mic.sampleRate)))
+        if (len(audioBuffer) > 16000 * MAX_BUFFER_DURATION):
+            # デバッグ用保存
+            # with wave.open("test.wav", "wb") as wf:
+            #     wf.setnchannels(1)
+            #     wf.setsampwidth(2)
+            #     wf.setframerate(16000)
+            #     wf.writeframes((audioBuffer * 32767).astype(np.int16).tobytes())
+            # exit()
+
+            audioBuffer = audioBuffer[-MAX_BUFFER_DURATION * 16000:]
+
+        timeTranscribeStart = time.perf_counter()
         segments, info = model.transcribe(audioBuffer)
+        timeTranscribe = time.perf_counter() - timeTranscribeStart
+
+        print(f"\rLast transcribe time {timeTranscribe:.5f}s [{info.language}]", end = " ")
+        fulltext = ""
 
         for segment in segments:
-            print(f"\r[{info.language}] {segment.text:<100}", end = "", flush = True)
+            fulltext += segment.text
+
+        print(f"{fulltext[-100:]:<100}", end = "")
 
 if __name__ == "__main__":
     main()
