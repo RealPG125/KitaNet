@@ -1,6 +1,5 @@
 def succeeds(func, *args, **kwargs):
     try:
-        func(*args, **kwargs)
-        return True
+        return True, func(*args, **kwargs)
     except Exception:
-        return False
+        return False, -1
