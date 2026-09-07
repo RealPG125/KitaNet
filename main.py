@@ -1,23 +1,21 @@
 import numpy as np
 import pyaudiowpatch as pyaudio
-import threading        # インプット用
+import threading
 import queue
 import time
 import wave
 import sys
 import os
 import helper
-import asyncio          # タスク用、検討
+import asyncio
 # import websocket
 from faster_whisper import WhisperModel
 from scipy.signal import resample_poly
 from pyrnnoise_customfork import RNNoise
 
-MODEL = "base"         # 軽 → 重: "tiny" (75MB), "base" (142MB), "small" (466MB), "medium" (1.5GB), "large-v3" (3.0GB)
-DEVICE = "cuda"         # CPU: "cpu", Nvidia GPU: "cuda"
+# model     : 軽 → 重: "tiny" (75MB), "base" (142MB), "small" (466MB), "medium" (1.5GB), "large-v3" (3.0GB)
+# device    : "cpu", Nvidia GPU: "cuda"
 
-SAMPLE_RATE_MIC = 16000
-CHUNK_DURATION = 2.0
 MAX_BUFFER_DURATION = 20
 
 class Mic:
