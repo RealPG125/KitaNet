@@ -309,13 +309,11 @@ def pyttsx3_speak(text: str, lang: str, emotion: str, gender: str) -> bool:
 # ============================
 #  メイン読み上げ
 # ============================
-def speak(text: str, lang: str, gender: str, emotion_override: str = "auto"):
+def speak(text: str, lang: str, gender: str):
     if lang == "auto":
         lang = detect_language(text)
 
-    emotion = (emotion_override
-               if emotion_override != "auto" and emotion_override in EMOTION_PROFILES
-               else detect_emotion(text))
+    emotion = detect_emotion(text)
 
     print(f"言語: {lang}  /  感情: {EMOTION_PROFILES[emotion]['label']}  /  性別: {gender}")
     print("読み上げ中...")
@@ -369,37 +367,27 @@ def select_gender() -> str:
         if c == "1": return "female"
         if c == "2": return "male"
 
-def select_emotion() -> str:
-    opts = {"1":"auto","2":"normal","3":"excited","4":"curious","5":"sad","6":"calm"}
-    print("感情を選択:")
-    print("  1=auto  2=normal  3=excited[!]  4=curious[?]  5=sad[...]  6=calm[~~]")
-    while True:
-        c = input("選択 (1-6) > ").strip()
-        if c in opts: return opts[c]
-
 # ============================
 #  メイン
 # ============================
 def main():
-    print("=" * 55)
-    print("  TTS 全言語 / 感情 / 性別 対応ツール")
-    print("=" * 55)
-    print("  入力形式:")
-    print("    テキスト              -> 言語・感情 自動")
-    print("    テキスト:言語         -> 言語手動")
-    print("    テキスト@感情         -> 感情手動")
-    print("    テキスト@感情:言語    -> 両方手動")
+    print("=" * 50)
+    print("  TTS 音声読み上げツール")
+    print("=" * 50)
+    print("  言語・感情は自動検出します")
+    print("  感情は末尾記号で判定:")
+    print("    !  -> excited   ?  -> curious")
+    print("    .. -> sad      ~~ -> calm")
     print()
-    print("  例) Hello world@excited:en  /  悲しいな@sad:ja")
+    print("  言語を手動指定: テキスト:言語コード")
+    print("  例) Hello world:en  /  สวัสดี:th")
     print()
-    print("  コマンド: emotion / gender / langs / quit")
-    print("=" * 55)
+    print("  コマンド: gender / langs / quit")
+    print("=" * 50)
     print()
 
-    gender       = select_gender()
+    gender = select_gender()
     print(f"性別: {gender}\n")
-    emotion_mode = select_emotion()
-    print(f"感情モード: {emotion_mode}\n")
 
     while True:
         raw = input("テキスト > ").strip()
@@ -413,33 +401,17 @@ def main():
         if raw.lower() == "gender":
             gender = select_gender()
             print(f"性別: {gender}\n"); continue
-        if raw.lower() == "emotion":
-            emotion_mode = select_emotion()
-            print(f"感情モード: {emotion_mode}\n"); continue
 
-        # テキスト解析: テキスト@感情:言語
-        text    = raw
-        lang    = "auto"
-        emotion = emotion_mode
-
-        if "@" in text:
-            t_parts = text.rsplit("@", 1)
-            text    = t_parts[0].strip()
-            rest    = t_parts[1].strip()
-            if ":" in rest:
-                emo_raw, lang = rest.split(":", 1)
-                emo_raw = emo_raw.strip().lower()
-                lang    = lang.strip().lower()
-            else:
-                emo_raw = rest.lower()
-            emotion = emo_raw if emo_raw in EMOTION_PROFILES else emotion_mode
-
-        elif ":" in text:
-            parts = text.rsplit(":", 1)
+        # 言語手動指定: テキスト:言語コード
+        if ":" in raw:
+            parts = raw.rsplit(":", 1)
             text  = parts[0].strip()
             lang  = parts[1].strip().lower()
+        else:
+            text = raw
+            lang = "auto"
 
-        speak(text, lang, gender, emotion)
+        speak(text, lang, gender)
         print()
 
 if __name__ == "__main__":
