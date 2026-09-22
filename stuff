@@ -1,0 +1,1063 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>店舗接客リアルタイムダッシュボード</title>
+  <style>
+    :root {
+      --bg: #f1f5f9;
+      --card-bg: #ffffff;
+      --text-main: #0f172a;
+      --text-muted: #64748b;
+      --border-color: #cbd5e1;
+      
+      --status-empty: #94a3b8;
+      --status-normal: #3b82f6;
+      --status-speaking: #10b981;
+      --status-allergy: #dc2626;
+      --status-reserved: #f59e0b;
+
+      /* カラム横幅の可変CSS変数 */
+      --left-panel-width: 250px;
+      --right-panel-width: 350px;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Hiragino Kaku Gothic ProN", sans-serif; }
+    body { background-color: var(--bg); color: var(--text-main); padding: 12px; height: 100vh; overflow: hidden; }
+
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 10px;
+      padding: 10px 18px;
+      background: var(--card-bg);
+      border-radius: 10px;
+      border: 1px solid var(--border-color);
+      box-shadow: 0 1px 3px rgba(0,0,0,0.03);
+    }
+    .header-left { display: flex; align-items: center; gap: 14px; }
+    .header-title { font-size: 1.2rem; font-weight: 800; display: flex; align-items: center; gap: 10px; }
+    
+    .btn-undo-header {
+      display: none;
+      align-items: center;
+      gap: 6px;
+      background: #eff6ff;
+      border: 1.5px solid #93c5fd;
+      color: #1d4ed8;
+      padding: 5px 12px;
+      border-radius: 6px;
+      font-size: 0.8rem;
+      font-weight: 800;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .btn-undo-header:hover { background: #dbeafe; }
+
+    .store-summary {
+      font-size: 0.85rem;
+      font-weight: 700;
+      color: #334155;
+      background: #f8fafc;
+      padding: 6px 14px;
+      border-radius: 9999px;
+      border: 1px solid var(--border-color);
+      display: flex;
+      gap: 12px;
+    }
+
+    /* 3カラム：待合 / フロアマップ / 詳細パネル（幅可変フレックス構成） */
+    .app-layout {
+      display: flex;
+      flex-direction: row;
+      gap: 0;
+      height: calc(100vh - 75px);
+      user-select: none;
+      overflow: hidden;
+    }
+
+    /* 左カラム：待合リスト */
+    .waiting-panel {
+      width: var(--left-panel-width);
+      min-width: 150px;
+      max-width: 460px;
+      flex-shrink: 0;
+      background: var(--card-bg);
+      border-radius: 12px;
+      border: 1px solid var(--border-color);
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      overflow-y: auto;
+    }
+    .panel-caption { font-size: 0.85rem; font-weight: 800; color: var(--text-muted); }
+    .waiting-list { display: flex; flex-direction: column; gap: 8px; flex: 1; }
+
+    .waiting-card {
+      background: #f8fafc;
+      border: 1.5px solid var(--border-color);
+      border-radius: 8px;
+      padding: 10px;
+      cursor: grab;
+      user-select: none;
+      transition: all 0.15s;
+    }
+    .waiting-card:active { cursor: grabbing; opacity: 0.6; }
+    .waiting-card.has-allergy { border-color: #fca5a5; background: #fff5f5; }
+    .waiting-card-header { display: flex; justify-content: space-between; align-items: center; }
+    .waiting-name { font-weight: 800; font-size: 0.95rem; }
+    .waiting-guests { font-size: 0.75rem; font-weight: 800; color: #2563eb; background: #eff6ff; padding: 2px 6px; border-radius: 4px; }
+    .waiting-meta { font-size: 0.75rem; color: var(--text-muted); margin-top: 4px; }
+
+    /* 中央：フロアマップ */
+    .floor-panel {
+      flex: 1 1 0%;
+      min-width: 480px;
+      background: var(--card-bg);
+      border-radius: 12px;
+      border: 1px solid var(--border-color);
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .floor-canvas {
+      flex: 1;
+      position: relative;
+      background: #f8fafc;
+      border: 2px dashed #94a3b8;
+      border-radius: 10px;
+      min-width: 800px;
+      min-height: 540px;
+      overflow: auto;
+    }
+
+    /* 安定した施設配置（キープされた基準サイズ） */
+    .facility-box {
+      position: absolute;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 900;
+      border: 1.5px solid #94a3b8;
+      background: #e2e8f0;
+      color: #334155;
+      letter-spacing: 0.05em;
+    }
+    .facility-kitchen  { top: 12px; left: 12px; width: 150px; height: 210px; font-size: 1.1rem; }
+    .facility-cashier  { top: 12px; left: 175px; width: 110px; height: 55px; font-size: 0.95rem; }
+    .facility-entrance { top: 12px; right: 15px; width: 95px; height: 55px; background: #e0f2fe; color: #0369a1; border-color: #7dd3fc; font-size: 0.95rem; }
+
+    /* 大型テーブルカード（130px基準） */
+    .seat-card {
+      position: absolute;
+      border-radius: 14px;
+      background: #ffffff;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      cursor: pointer;
+      user-select: none;
+      padding: 8px;
+      box-shadow: 0 4px 10px rgba(0,0,0,0.06);
+      transition: all 0.15s ease-in-out;
+      border: 3.5px solid #cbd5e1;
+    }
+    .seat-card:hover { transform: translateY(-3px); box-shadow: 0 8px 16px rgba(0,0,0,0.1); }
+    .seat-card.active {
+      box-shadow: 0 0 0 4px #0f172a, 0 8px 20px rgba(0,0,0,0.15);
+      transform: scale(1.03);
+      z-index: 25;
+    }
+
+    /* ドラッグオーバー判定 */
+    .seat-card.drag-over {
+      border: 3.5px dashed #2563eb !important;
+      background: #dbeafe !important;
+      transform: scale(1.05);
+    }
+
+    /* テーブルステータス別スタイル */
+    .seat-card.is-empty    { border: 2px dashed #94a3b8; background: #f8fafc; opacity: 0.7; }
+    .seat-card.is-empty .card-t-num { color: #94a3b8; }
+    .seat-card.no-ai       { border-color: #93c5fd; background: #eff6ff; }
+    .seat-card.speaking    { border-color: var(--status-speaking); background: #ecfdf5; }
+    .seat-card.has-allergy { border-color: var(--status-allergy); background: #fef2f2; }
+    .seat-card.is-reserved { border-color: var(--status-reserved); background: #fffbeb; border-style: double; border-width: 4px; }
+
+    .card-top { display: flex; justify-content: space-between; align-items: center; }
+    .card-t-num { font-size: 1.35rem; font-weight: 900; }
+    .card-guests { font-size: 0.85rem; font-weight: 800; color: #1e293b; background: rgba(255,255,255,0.85); padding: 1px 6px; border-radius: 6px; }
+
+    .card-body {
+      text-align: center;
+      margin: 2px 0;
+      min-height: 38px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+      flex-wrap: wrap;
+    }
+
+    /* アレルゲン単語赤バッジ */
+    .card-allergy-chip {
+      background: #dc2626;
+      color: #ffffff;
+      font-size: 0.75rem;
+      font-weight: 900;
+      padding: 2px 6px;
+      border-radius: 4px;
+      display: inline-block;
+      line-height: 1.2;
+    }
+    .card-badge-speak    { background: #059669; color: white; font-size: 0.75rem; font-weight: 900; padding: 3px 6px; border-radius: 6px; }
+    .card-badge-reserved { background: #d97706; color: white; font-size: 0.75rem; font-weight: 900; padding: 3px 6px; border-radius: 6px; }
+
+    .card-footer {
+      font-size: 0.75rem;
+      font-weight: 800;
+      color: #64748b;
+      display: flex;
+      justify-content: flex-start;
+      border-top: 1px dashed rgba(0,0,0,0.1);
+      padding-top: 3px;
+    }
+
+    /* 原寸フロア座標（キープ配置） */
+    #tbl-1  { left: 175px; top: 80px;  width: 130px; height: 130px; }
+    #tbl-2  { left: 320px; top: 80px;  width: 130px; height: 130px; }
+    #tbl-3  { left: 465px; top: 80px;  width: 130px; height: 130px; }
+    #tbl-4  { right: 15px; top: 80px;  width: 125px; height: 130px; }
+    #tbl-5  { right: 15px; top: 225px; width: 125px; height: 130px; }
+    #tbl-6  { left: 15px;  bottom: 20px; width: 130px; height: 140px; }
+    #tbl-7  { left: 160px; bottom: 20px; width: 130px; height: 140px; }
+    #tbl-8  { left: 305px; bottom: 20px; width: 130px; height: 140px; }
+    #tbl-9  { left: 450px; bottom: 20px; width: 130px; height: 140px; }
+    #tbl-10 { right: 15px; bottom: 20px; width: 125px; height: 140px; }
+
+    /* 右側：詳細パネル */
+    .detail-panel {
+      width: var(--right-panel-width);
+      min-width: 220px;
+      max-width: 600px;
+      flex-shrink: 0;
+      background: var(--card-bg);
+      border-radius: 12px;
+      border: 1px solid var(--border-color);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .detail-header {
+      padding: 12px 16px;
+      background: #f8fafc;
+      border-bottom: 2px solid var(--border-color);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .detail-header h2 { font-size: 1.25rem; font-weight: 900; }
+    .detail-sub { font-size: 0.8rem; color: var(--text-muted); margin-top: 2px; }
+
+    /* 配席操作エリア（待合に戻すボタンなど） */
+    .table-actions {
+      padding: 8px 14px;
+      background: #f1f5f9;
+      border-bottom: 1px solid var(--border-color);
+      display: flex;
+      gap: 8px;
+    }
+    .btn-return-waiting {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      background: #ffffff;
+      border: 1.5px solid #f59e0b;
+      color: #b45309;
+      padding: 7px 10px;
+      border-radius: 6px;
+      font-size: 0.8rem;
+      font-weight: 800;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .btn-return-waiting:hover { background: #fef3c7; }
+
+    .detail-scroll { flex: 1; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+
+    /* 顧客カルテカード */
+    .guest-card {
+      background: #ffffff;
+      border-radius: 8px;
+      border: 1.5px solid var(--border-color);
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .guest-card:hover { border-color: #2563eb; transform: translateY(-2px); }
+    .guest-card.danger { border: 2px solid #ef4444; background: #fff5f5; }
+    .guest-card-top { display: flex; justify-content: space-between; align-items: center; }
+    .guest-card-name { font-size: 1rem; font-weight: 800; color: #0f172a; }
+    .guest-card-meta { font-size: 0.75rem; background: #e2e8f0; color: #334155; padding: 2px 6px; border-radius: 4px; font-weight: 700; }
+
+    .allergy-tag {
+      background: #fee2e2;
+      border: 1px solid #dc2626;
+      color: #991b1b;
+      font-weight: 900;
+      font-size: 0.75rem;
+      padding: 2px 6px;
+      border-radius: 4px;
+      display: inline-block;
+    }
+
+    .hint-box {
+      background: #fffbeb;
+      border: 1px solid #fde68a;
+      border-radius: 6px;
+      padding: 6px 8px;
+      font-size: 0.8rem;
+    }
+    .hint-label { font-size: 0.7rem; font-weight: 900; color: #92400e; }
+    .hint-text { color: #78350f; font-weight: 500; margin-top: 2px; }
+
+    /* モーダル */
+    .modal-backdrop {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(15, 23, 42, 0.6);
+      backdrop-filter: blur(2px);
+      z-index: 100;
+      align-items: center;
+      justify-content: center;
+    }
+    .modal-box {
+      background: #ffffff;
+      width: 90%;
+      max-width: 640px;
+      max-height: 90vh;
+      border-radius: 12px;
+      border: 1px solid var(--border-color);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .modal-header { padding: 14px 18px; background: #f8fafc; border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; }
+    .modal-body { padding: 16px; overflow-y: auto; display: flex; flex-direction: column; gap: 14px; }
+    .modal-section-title { font-size: 0.85rem; font-weight: 800; color: var(--text-muted); border-bottom: 2px solid #e2e8f0; padding-bottom: 4px; margin-bottom: 6px; }
+    .modal-footer { padding: 12px 18px; background: #f8fafc; border-top: 1px solid var(--border-color); display: flex; justify-content: flex-end; gap: 8px; }
+
+    .btn { padding: 6px 14px; border-radius: 6px; font-weight: 700; font-size: 0.85rem; cursor: pointer; border: none; }
+    .btn-secondary { background: #e2e8f0; color: #334155; }
+    .btn-primary { background: #2563eb; color: #ffffff; }
+
+    .er-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; font-size: 0.8rem; }
+    .er-item { background: #f8fafc; padding: 6px 10px; border-radius: 6px; border: 1px solid #e2e8f0; }
+    .er-label { color: #64748b; font-size: 0.7rem; font-weight: 700; }
+    .er-val { font-weight: 800; color: #0f172a; }
+
+    .allergy-editor { display: flex; flex-wrap: wrap; gap: 8px; background: #fff1f2; border: 1px solid #fecdd3; padding: 10px; border-radius: 6px; }
+    .allergy-checkbox-label { display: flex; align-items: center; gap: 4px; font-size: 0.8rem; font-weight: 700; color: #9f1239; cursor: pointer; background: #ffffff; padding: 3px 8px; border-radius: 4px; border: 1px solid #fda4af; }
+
+    .session-table { width: 100%; border-collapse: collapse; font-size: 0.75rem; }
+    .session-table th, .session-table td { border: 1px solid #e2e8f0; padding: 6px 8px; text-align: left; }
+    .session-table th { background: #f1f5f9; color: #475569; }
+
+    /* カラム境界リサイザー（ドラッグバー） */
+    .column-resizer {
+      width: 10px;
+      cursor: col-resize;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+      z-index: 35;
+      background: transparent;
+      transition: background 0.15s;
+      flex-shrink: 0;
+    }
+    .column-resizer::after {
+      content: '';
+      width: 3px;
+      height: 38px;
+      border-radius: 9999px;
+      background: #cbd5e1;
+      transition: all 0.15s;
+    }
+    .column-resizer:hover::after,
+    .column-resizer.is-dragging::after {
+      background: #2563eb;
+      width: 4px;
+      height: 58px;
+    }
+    .column-resizer:hover,
+    .column-resizer.is-dragging {
+      background: rgba(37, 99, 235, 0.08);
+    }
+
+    /* パネルヘッダーの幅クイック調整ボタン群 */
+    .panel-ctrl-btns {
+      display: flex;
+      gap: 4px;
+      align-items: center;
+    }
+    .btn-w-ctrl {
+      background: #f1f5f9;
+      border: 1px solid #cbd5e1;
+      color: #475569;
+      font-size: 0.7rem;
+      font-weight: 800;
+      padding: 2px 7px;
+      border-radius: 4px;
+      cursor: pointer;
+      line-height: 1.2;
+      transition: all 0.1s;
+    }
+    .btn-w-ctrl:hover {
+      background: #e2e8f0;
+      color: #0f172a;
+      border-color: #94a3b8;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ヘッダー -->
+  <header>
+    <div class="header-left">
+      <div class="header-title">
+        <span>🍽️ 店舗接客ダッシュボード</span>
+      </div>
+      <!-- 配席直後ワンクリック取り消しボタン -->
+      <button id="header-undo-btn" class="btn-undo-header" onclick="undoLastAssignment()">
+        ↩️ 直前の配席を取り消す (<span id="undo-desc"></span>)
+      </button>
+    </div>
+    <div class="store-summary">
+      <span>待機中：<strong id="wait-count" style="color:#2563eb;">2組</strong></span>
+      <span id="active-count-badge">稼働：6卓</span>
+      <span style="color:#d97706;">予約：2卓</span>
+      <span id="empty-count-badge">空席：2卓</span>
+    </div>
+  </header>
+
+  <!-- 3カラムメイン領域 -->
+  <div class="app-layout" id="app-layout">
+    <!-- 左：待合リスト（ドラッグ可能） -->
+    <div class="waiting-panel" id="waiting-panel">
+      <div class="panel-caption" style="display:flex; justify-content:space-between; align-items:center;">
+        <span>待合受付</span>
+        <div class="panel-ctrl-btns">
+          <button class="btn-w-ctrl" onclick="setLeftWidth(160)" title="待合を狭く">小</button>
+          <button class="btn-w-ctrl" onclick="setLeftWidth(250)" title="待合を標準幅に">中</button>
+          <button class="btn-w-ctrl" onclick="setLeftWidth(380)" title="待合を広く">大</button>
+        </div>
+      </div>
+      <div class="waiting-list" id="waiting-container"></div>
+    </div>
+
+    <!-- 左-中央 境界リサイザーバー -->
+    <div class="column-resizer" id="resizer-left" title="左右にドラッグして待合リストの幅を調整"></div>
+
+    <!-- 中央：フロアマップ（元デザインの配置・比率を維持） -->
+    <div class="floor-panel" id="floor-panel">
+      <div class="panel-caption" style="margin-bottom: 6px; display:flex; justify-content:space-between; align-items:center;">
+        <span>フロア座席図（空席へ直接ドラッグ＆ドロップ可能）</span>
+        <div class="panel-ctrl-btns">
+          <button class="btn-w-ctrl" onclick="resetPanelWidths()" title="初期レイアウトに戻す">標準幅に復帰</button>
+          <button class="btn-w-ctrl" onclick="maximizeFloorMap()" title="座席図を広々表示">座席図最大化</button>
+        </div>
+      </div>
+      <div class="floor-canvas">
+        <div class="facility-box facility-kitchen">厨房</div>
+        <div class="facility-box facility-cashier">レジ</div>
+        <div class="facility-box facility-entrance">出入口</div>
+
+        <!-- 1〜10番卓 -->
+        <div id="tbl-1" class="seat-card has-allergy active" onclick="showTableDetail(1)">
+          <div class="card-top"><span class="card-t-num">1番</span><span class="card-guests">3名</span></div>
+          <div class="card-body" id="tbl-1-badges"><span class="card-allergy-chip">エビ</span><span class="card-allergy-chip">カニ</span><span class="card-allergy-chip">小麦</span></div>
+          <div class="card-footer"><span>滞在 25分</span></div>
+        </div>
+
+        <div id="tbl-2" class="seat-card no-ai" onclick="showTableDetail(2)">
+          <div class="card-top"><span class="card-t-num">2番</span><span class="card-guests">2名</span></div>
+          <div class="card-body" id="tbl-2-badges"></div>
+          <div class="card-footer"><span>滞在 10分</span></div>
+        </div>
+
+        <div id="tbl-3" class="seat-card speaking" onclick="showTableDetail(3)">
+          <div class="card-top"><span class="card-t-num">3番</span><span class="card-guests">4名</span></div>
+          <div class="card-body"><span class="card-badge-speak">🎙️ 対話中</span></div>
+          <div class="card-footer"><span>滞在 15分</span></div>
+        </div>
+
+        <div id="tbl-4" class="seat-card is-reserved" onclick="showTableDetail(4)">
+          <div class="card-top"><span class="card-t-num">4番</span><span class="card-guests">4名予約</span></div>
+          <div class="card-body"><span class="card-badge-reserved">13:00 予約</span></div>
+          <div class="card-footer"><span style="color:#b45309;">田中 様</span></div>
+        </div>
+
+        <div id="tbl-5" class="seat-card has-allergy" onclick="showTableDetail(5)">
+          <div class="card-top"><span class="card-t-num">5番</span><span class="card-guests">1名</span></div>
+          <div class="card-body" id="tbl-5-badges"><span class="card-allergy-chip">そば</span><span class="card-allergy-chip">落花生</span></div>
+          <div class="card-footer"><span>滞在 18分</span></div>
+        </div>
+
+        <div id="tbl-6" class="seat-card no-ai" onclick="showTableDetail(6)">
+          <div class="card-top"><span class="card-t-num">6番</span><span class="card-guests">4名</span></div>
+          <div class="card-body" id="tbl-6-badges"></div>
+          <div class="card-footer"><span>滞在 50分</span></div>
+        </div>
+
+        <!-- 空席（ドロップ受入対象） -->
+        <div id="tbl-7" class="seat-card is-empty" onclick="showTableDetail(7)">
+          <div class="card-top"><span class="card-t-num">7番</span><span class="card-guests" style="font-size:0.75rem; color:#94a3b8; font-weight:800; background:none;">空席</span></div>
+          <div class="card-body" id="tbl-7-badges"></div>
+          <div class="card-footer"><span style="color:#94a3b8;">案内可能</span></div>
+        </div>
+
+        <div id="tbl-8" class="seat-card is-reserved" onclick="showTableDetail(8)">
+          <div class="card-top"><span class="card-t-num">8番</span><span class="card-guests">2名予約</span></div>
+          <div class="card-body"><span class="card-badge-reserved">13:30 予約</span></div>
+          <div class="card-footer"><span style="color:#b45309;">高橋 様</span></div>
+        </div>
+
+        <div id="tbl-9" class="seat-card speaking" onclick="showTableDetail(9)">
+          <div class="card-top"><span class="card-t-num">9番</span><span class="card-guests">2名</span></div>
+          <div class="card-body"><span class="card-badge-speak">🎙️ 対話中</span></div>
+          <div class="card-footer"><span>滞在 5分</span></div>
+        </div>
+
+        <!-- 空席（ドロップ受入対象） -->
+        <div id="tbl-10" class="seat-card is-empty" onclick="showTableDetail(10)">
+          <div class="card-top"><span class="card-t-num">10番</span><span class="card-guests" style="font-size:0.75rem; color:#94a3b8; font-weight:800; background:none;">空席</span></div>
+          <div class="card-body" id="tbl-10-badges"></div>
+          <div class="card-footer"><span style="color:#94a3b8;">案内可能</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 中央-右 境界リサイザーバー -->
+    <div class="column-resizer" id="resizer-right" title="左右にドラッグして詳細パネルの幅を調整"></div>
+
+    <!-- 右：詳細パネル -->
+    <div class="detail-panel" id="detail-panel">
+      <div class="detail-header">
+        <div>
+          <h2 id="panel-title">1番テーブル</h2>
+          <div id="panel-sub" class="detail-sub">滞在：25分（3名）</div>
+        </div>
+        <div class="panel-ctrl-btns">
+          <button class="btn-w-ctrl" onclick="setRightWidth(250)" title="カルテをコンパクトに">小</button>
+          <button class="btn-w-ctrl" onclick="setRightWidth(350)" title="カルテを標準幅に">中</button>
+          <button class="btn-w-ctrl" onclick="setRightWidth(490)" title="カルテをワイドに">大</button>
+        </div>
+      </div>
+      <!-- 配席戻しボタン用コンテナ -->
+      <div id="panel-action-bar" class="table-actions" style="display:none;"></div>
+      <div class="detail-scroll" id="panel-content"></div>
+    </div>
+  </div>
+
+  <!-- 顧客詳細・アレルギー編集モーダル -->
+  <div class="modal-backdrop" id="guest-modal">
+    <div class="modal-box">
+      <div class="modal-header">
+        <div>
+          <h3 style="font-size:1.1rem; font-weight:800;" id="modal-user-name">顧客カルテ</h3>
+          <span style="font-size:0.75rem; color:#64748b;" id="modal-user-id">顧客識別番号: -</span>
+        </div>
+        <button class="btn btn-secondary" onclick="closeModal()">✕</button>
+      </div>
+
+      <div class="modal-body">
+        <div>
+          <div class="modal-section-title">顧客基本情報</div>
+          <div class="er-grid" id="modal-user-stats"></div>
+        </div>
+
+        <div>
+          <div class="modal-section-title" style="color: #b91c1c;">アレルゲン登録・編集</div>
+          <div class="allergy-editor" id="modal-allergy-editor"></div>
+        </div>
+
+        <div>
+          <div class="modal-section-title">お気に入り料理</div>
+          <div id="modal-menu-favs" style="font-size:0.8rem; color:#334155;"></div>
+        </div>
+
+        <div>
+          <div class="modal-section-title">入退店・滞在履歴</div>
+          <table class="session-table">
+            <thead><tr><th>セッション番号</th><th>卓番</th><th>入店</th><th>退店</th></tr></thead>
+            <tbody id="modal-session-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="closeModal()">閉じる</button>
+        <button class="btn btn-primary" onclick="saveAllergies()">💾 保存</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const ALL_ALLERGENS = ["エビ", "カニ", "小麦", "そば", "卵", "乳製品", "落花生", "大豆"];
+
+    // 顧客データベース（料理以外の日常雑談ネタ・地元トークを充実）
+    const usersDB = {
+      "u-001": { id: "u-001", name: "山田 太郎", region: "愛媛県上島町", join: "2024-06-15", last: "2026-09-22 12:02", count: 8, allergies: ["エビ", "カニ"], favs: ["オリーブ牛バーガー", "地酒 辛口"], hint: "【釣り・アウトドア】先週末も弓削港でチヌ（黒鯛）を釣り上げたそう。「次は佐島側のポイントを攻めたい」と話していました。オリーブ牛バーガーが大好物。", sessions: [{ sId: "0001", tId: 1, in: "2026-09-08 18:00", out: "2026-09-08 20:15" }, { sId: "0002", tId: 1, in: "2026-09-22 12:02", out: "利用中" }] },
+      "u-002": { id: "u-002", name: "佐藤 次郎", region: "広島県因島", join: "2025-01-10", last: "2026-09-22 12:02", count: 3, allergies: ["小麦"], favs: ["若鶏の唐揚げ"], hint: "【サイクリング】因島からフェリーで来島。クロスバイクでゆめしま海道を走るのが趣味。最近サドルを新調した話題で盛り上がりました。焼き魚提案推奨。", sessions: [{ sId: "0002", tId: 1, in: "2026-09-22 12:02", out: "利用中" }] },
+      "u-003": { id: "u-003", name: "鈴木 一郎", region: "愛媛県松山市", join: "2026-09-22", last: "2026-09-22 12:02", count: 1, allergies: [], favs: ["はちみつピザ"], hint: "【学生時代の思い出】弓削商船の機関科OB。今年の商船祭（高専祭）の展示や部活の後輩たちの様子を懐かしそうに話していました。", sessions: [{ sId: "0002", tId: 1, in: "2026-09-22 12:02", out: "利用中" }] },
+      "u-004": { id: "u-004", name: "木村 達也", region: "東京都", join: "2025-11-20", last: "2026-09-22 12:10", count: 4, allergies: ["そば", "落花生"], favs: ["海鮮丼"], hint: "【カメラ・出張】東京からの出張で来島。夕暮れ時の島の風景写真を撮るのが楽しみで一眼レフを持参。そば・落花生の器具共用に注意。", sessions: [{ sId: "0021", tId: 5, in: "2026-09-22 12:10", out: "利用中" }] },
+      "u-005": { id: "u-005", name: "田中 健一", region: "愛媛県今治市", join: "2023-04-10", last: "2026-08-30", count: 12, allergies: [], favs: ["刺身盛り合わせ"], hint: "【ドライブ・温泉】今治から友人達と車で来島。食後はフェスパの温泉に立ち寄る計画とのこと。13:00〜4名で事前予約中。", sessions: [] },
+      "u-wait-1": { id: "u-wait-1", name: "渡辺 航平 様", region: "愛媛県上島町", join: "2025-05-01", last: "2026-07-15", count: 5, allergies: ["卵"], favs: ["鯛めし"], hint: "【家庭菜園・柑橘】近所でレモンやみかんを栽培されている常連様。今年は柑橘の育ちが良いと話されていました。卵アレルギーに注意。", sessions: [] },
+      "u-wait-2": { id: "u-wait-2", name: "小林 さくら 様", region: "香川県高松市", join: "2026-09-22", last: "2026-09-22 12:00", count: 1, allergies: [], favs: ["季節のパフェ"], hint: "【女子旅・観光】SNSで島の海と空の写真を見て友人と初来島。静かな海沿いのカフェ巡りを楽しみにされています。", sessions: [] }
+    };
+
+    // 待合キュー
+    let waitingQueue = [
+      { queueId: "q-1", userId: "u-wait-1", guestsCount: 2 },
+      { queueId: "q-2", userId: "u-wait-2", guestsCount: 3 }
+    ];
+
+    // 全テーブル状態
+    const tableState = {
+      1:  { num: 1,  type: "active",   stayTime: "25分", guestCount: 3, userIds: ["u-001", "u-002", "u-003"], assignedFromQueueId: null },
+      2:  { num: 2,  type: "active",   stayTime: "10分", guestCount: 2, userIds: [], assignedFromQueueId: null },
+      3:  { num: 3,  type: "speaking", stayTime: "15分", guestCount: 4, userIds: [], assignedFromQueueId: null },
+      4:  { num: 4,  type: "reserved", reserveTime: "13:00", guestCount: 4, userIds: ["u-005"], assignedFromQueueId: null },
+      5:  { num: 5,  type: "active",   stayTime: "18分", guestCount: 1, userIds: ["u-004"], assignedFromQueueId: null },
+      6:  { num: 6,  type: "active",   stayTime: "50分", guestCount: 4, userIds: [], assignedFromQueueId: null },
+      7:  { num: 7,  type: "empty",    guestCount: 0, userIds: [], assignedFromQueueId: null },
+      8:  { num: 8,  type: "reserved", reserveTime: "13:30", guestCount: 2, userIds: [], assignedFromQueueId: null },
+      9:  { num: 9,  type: "speaking", stayTime: "5分",  guestCount: 2, userIds: [], assignedFromQueueId: null },
+      10: { num: 10, type: "empty",    guestCount: 0, userIds: [], assignedFromQueueId: null }
+    };
+
+    let activeEditingUserId = null;
+    let selectedTableId = 1;
+    let draggedData = null;
+    let lastAssignmentHistory = null; // 配席Undo用の履歴
+
+    // 待合リスト描画
+    function renderWaitingList() {
+      const container = document.getElementById('waiting-container');
+      document.getElementById('wait-count').innerText = `${waitingQueue.length}組`;
+
+      // 稼働卓数と空席数の集計更新
+      let activeCount = 0;
+      let emptyCount = 0;
+      Object.values(tableState).forEach(t => {
+        if (t.type === 'active' || t.type === 'speaking') activeCount++;
+        if (t.type === 'empty') emptyCount++;
+      });
+      document.getElementById('active-count-badge').innerText = `稼働：${activeCount}卓`;
+      document.getElementById('empty-count-badge').innerText = `空席：${emptyCount}卓`;
+
+      if (waitingQueue.length === 0) {
+        container.innerHTML = `<div style="text-align:center; padding:30px 0; color:#94a3b8; font-size:0.8rem;">待機中のお客様はいません</div>`;
+        return;
+      }
+
+      container.innerHTML = waitingQueue.map(item => {
+        const u = usersDB[item.userId];
+        const hasAllergy = u && u.allergies.length > 0;
+        return `
+          <div class="waiting-card ${hasAllergy ? 'has-allergy' : ''}" 
+               draggable="true" 
+               ondragstart="handleDragStart(event, '${item.queueId}', '${item.userId}', ${item.guestsCount})">
+            <div class="waiting-card-header">
+              <span class="waiting-name">${u ? u.name : 'お客様'}</span>
+              <span class="waiting-guests">${item.guestsCount}名</span>
+            </div>
+            <div class="waiting-meta">累計来店: ${u ? u.count : 1}回</div>
+            ${hasAllergy ? `<div style="margin-top:4px;">${u.allergies.map(a => `<span class="card-allergy-chip" style="font-size:0.65rem; padding:1px 4px;">${a}</span>`).join(' ')}</div>` : ''}
+          </div>
+        `;
+      }).join('');
+    }
+
+    // ドラッグ＆ドロップ制御
+    function handleDragStart(e, queueId, userId, count) {
+      draggedData = { queueId, userId, count };
+      e.dataTransfer.setData('text/plain', JSON.stringify(draggedData));
+    }
+
+    function setupDropZones() {
+      [1,2,3,4,5,6,7,8,9,10].forEach(tableId => {
+        const el = document.getElementById(`tbl-${tableId}`);
+        if (!el) return;
+
+        el.addEventListener('dragover', (e) => {
+          if (tableState[tableId].type === 'empty') {
+            e.preventDefault();
+            el.classList.add('drag-over');
+          }
+        });
+
+        el.addEventListener('dragleave', () => el.classList.remove('drag-over'));
+
+        el.addEventListener('drop', (e) => {
+          e.preventDefault();
+          el.classList.remove('drag-over');
+          if (draggedData && tableState[tableId].type === 'empty') {
+            assignTable(tableId, draggedData);
+          }
+        });
+      });
+    }
+
+    // 空席への配席確定処理
+    function assignTable(tableId, data) {
+      // 直前配席のUndo履歴として記録
+      lastAssignmentHistory = {
+        tableId: tableId,
+        queueId: data.queueId,
+        userId: data.userId,
+        guestsCount: data.count
+      };
+
+      // 待合キューから除外
+      waitingQueue = waitingQueue.filter(q => q.queueId !== data.queueId);
+      
+      const tbl = tableState[tableId];
+      tbl.type = 'active';
+      tbl.stayTime = '1分';
+      tbl.guestCount = data.count;
+      tbl.userIds = [data.userId];
+      tbl.assignedFromQueueId = data.queueId; // 待合復帰用ID
+
+      const card = document.getElementById(`tbl-${tableId}`);
+      const badges = document.getElementById(`tbl-${tableId}-badges`);
+      const u = usersDB[data.userId];
+      
+      card.className = `seat-card ${u.allergies.length > 0 ? 'has-allergy' : 'no-ai'}`;
+      card.querySelector('.card-guests').innerText = `${data.count}名`;
+      card.querySelector('.card-guests').style.color = '#1e293b';
+      card.querySelector('.card-guests').style.background = 'rgba(255,255,255,0.85)';
+      card.querySelector('.card-footer').innerHTML = `<span>滞在 1分</span>`;
+
+      if (u.allergies.length > 0) {
+        badges.innerHTML = u.allergies.map(a => `<span class="card-allergy-chip">${a}</span>`).join(' ');
+      } else {
+        badges.innerHTML = '';
+      }
+
+      // ヘッダーのUndoボタンを表示
+      const undoBtn = document.getElementById('header-undo-btn');
+      const undoDesc = document.getElementById('undo-desc');
+      undoDesc.innerText = `${tableId}番卓 → ${u.name}`;
+      undoBtn.style.display = 'inline-flex';
+
+      renderWaitingList();
+      showTableDetail(tableId);
+    }
+
+    // テーブルの着席を待合リストへ戻す（配席ミスを即座に修正）
+    function returnTableToWaiting(tableId) {
+      const tbl = tableState[tableId];
+      if (!tbl || tbl.type === 'empty' || tbl.type === 'reserved') return;
+
+      const returnUserId = tbl.userIds[0];
+      const returnCount = tbl.guestCount || (tbl.userIds.length > 0 ? tbl.userIds.length : 2);
+      const queueId = tbl.assignedFromQueueId || `q-return-${Date.now()}`;
+
+      // 待合リストへ先頭で復帰
+      if (returnUserId) {
+        waitingQueue.unshift({
+          queueId: queueId,
+          userId: returnUserId,
+          guestsCount: returnCount
+        });
+      }
+
+      // テーブル状態を空席へリセット
+      tbl.type = 'empty';
+      tbl.stayTime = null;
+      tbl.guestCount = 0;
+      tbl.userIds = [];
+      tbl.assignedFromQueueId = null;
+
+      // DOM要素を空席スタイルへ復帰
+      const card = document.getElementById(`tbl-${tableId}`);
+      const badges = document.getElementById(`tbl-${tableId}-badges`);
+
+      card.className = 'seat-card is-empty';
+      card.querySelector('.card-guests').innerText = '空席';
+      card.querySelector('.card-guests').style.color = '#94a3b8';
+      card.querySelector('.card-guests').style.background = 'none';
+      card.querySelector('.card-footer').innerHTML = `<span style="color:#94a3b8;">案内可能</span>`;
+      badges.innerHTML = '';
+
+      // 直前配席の履歴と一致する場合は非表示化
+      if (lastAssignmentHistory && lastAssignmentHistory.tableId === tableId) {
+        document.getElementById('header-undo-btn').style.display = 'none';
+        lastAssignmentHistory = null;
+      }
+
+      renderWaitingList();
+      showTableDetail(tableId);
+    }
+
+    // ヘッダーのUndoボタンから直前の配席を取り消す
+    function undoLastAssignment() {
+      if (!lastAssignmentHistory) return;
+      returnTableToWaiting(lastAssignmentHistory.tableId);
+    }
+
+    // 右側詳細パネル表示
+    function showTableDetail(tableId) {
+      selectedTableId = tableId;
+      document.querySelectorAll('.seat-card').forEach(el => el.classList.remove('active'));
+      const activeEl = document.getElementById(`tbl-${tableId}`);
+      if (activeEl) activeEl.classList.add('active');
+
+      const tbl = tableState[tableId];
+      const titleEl = document.getElementById('panel-title');
+      const subEl = document.getElementById('panel-sub');
+      const contentEl = document.getElementById('panel-content');
+      const actionBar = document.getElementById('panel-action-bar');
+
+      titleEl.innerText = `${tableId}番テーブル`;
+
+      if (tbl.type === 'empty') {
+        actionBar.style.display = 'none';
+        subEl.innerText = "空席（即時案内可能）";
+        contentEl.innerHTML = `
+          <div style="text-align:center; padding:50px 0; color:#94a3b8;">
+            <div style="font-size:2.6rem;">🪑</div>
+            <div style="font-weight:800; font-size:1rem; color:#475569; margin-top:8px;">現在空席です</div>
+            <div style="font-size:0.8rem; margin-top:4px;">左の待合リストからドラッグ＆ドロップして配席してください</div>
+          </div>
+        `;
+        return;
+      }
+
+      if (tbl.type === 'reserved') {
+        actionBar.style.display = 'none';
+        subEl.innerText = `事前予約席（${tbl.reserveTime} ご来店予定）`;
+        contentEl.innerHTML = tbl.userIds.map(uid => {
+          const u = usersDB[uid];
+          return `
+            <div class="guest-card" onclick="openUserModal('${u.id}')">
+              <div class="guest-card-top">
+                <span class="guest-card-name">👤 ${u.name} (代表予約)</span>
+                <span class="guest-card-meta">来店 ${u.count}回目</span>
+              </div>
+              <div class="hint-box">
+                <div class="hint-label">💡 予約情報・カルテ</div>
+                <div class="hint-text">${u.hint}</div>
+              </div>
+            </div>
+          `;
+        }).join('');
+        return;
+      }
+
+      // 着席中テーブル：待合リストへ戻すアクションボタンを表示
+      actionBar.style.display = 'flex';
+      actionBar.innerHTML = `
+        <button class="btn-return-waiting" onclick="returnTableToWaiting(${tableId})">
+          ↩️ この組の配席を取り消して待合に戻す
+        </button>
+      `;
+
+      subEl.innerText = `滞在：${tbl.stayTime}（${tbl.guestCount || tbl.userIds.length}名）`;
+
+      if (tbl.userIds.length === 0) {
+        contentEl.innerHTML = `
+          <div style="padding:20px 10px; color:#64748b; font-size:0.85rem; text-align:center;">
+            一般着席中（登録カルテなし）
+          </div>
+        `;
+        return;
+      }
+
+      contentEl.innerHTML = tbl.userIds.map(uid => {
+        const u = usersDB[uid];
+        if (!u) return '';
+        const hasAllergy = u.allergies.length > 0;
+        return `
+          <div class="guest-card ${hasAllergy ? 'danger' : ''}" onclick="openUserModal('${u.id}')">
+            <div class="guest-card-top">
+              <span class="guest-card-name">${u.name}</span>
+              <span class="guest-card-meta">来店 ${u.count}回目</span>
+            </div>
+            ${hasAllergy ? `<div>${u.allergies.map(a => `<span class="allergy-tag">${a}</span>`).join(' ')}</div>` : ''}
+            <div class="hint-box">
+              <div class="hint-label">💡 接客メモ</div>
+              <div class="hint-text">${u.hint}</div>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    // 顧客詳細モーダル
+    function openUserModal(userId) {
+      activeEditingUserId = userId;
+      const u = usersDB[userId];
+
+      document.getElementById('modal-user-name').innerText = `${u.name} 様のカルテ`;
+      document.getElementById('modal-user-id').innerText = `顧客識別番号: ${u.id}`;
+
+      document.getElementById('modal-user-stats').innerHTML = `
+        <div class="er-item"><div class="er-label">累計来店回数</div><div class="er-val">${u.count} 回</div></div>
+        <div class="er-item"><div class="er-label">居住地域</div><div class="er-val">${u.region}</div></div>
+        <div class="er-item"><div class="er-label">初回登録</div><div class="er-val">${u.join}</div></div>
+        <div class="er-item"><div class="er-label">最終来店</div><div class="er-val">${u.last}</div></div>
+      `;
+
+      document.getElementById('modal-allergy-editor').innerHTML = ALL_ALLERGENS.map(item => `
+        <label class="allergy-checkbox-label">
+          <input type="checkbox" value="${item}" ${u.allergies.includes(item) ? 'checked' : ''}>
+          <span>${item}</span>
+        </label>
+      `).join('');
+
+      document.getElementById('modal-menu-favs').innerHTML = u.favs.map(m => `<div>⭐ <strong>${m}</strong></div>`).join('') || '登録なし';
+
+      document.getElementById('modal-session-tbody').innerHTML = u.sessions.map(s => `
+        <tr><td>${s.sId}</td><td>${s.tId}番卓</td><td>${s.in}</td><td>${s.out}</td></tr>
+      `).join('');
+
+      document.getElementById('guest-modal').style.display = 'flex';
+    }
+
+    function closeModal() {
+      document.getElementById('guest-modal').style.display = 'none';
+      activeEditingUserId = null;
+    }
+
+    // アレルギー保存・即時UI同期
+    function saveAllergies() {
+      if (!activeEditingUserId) return;
+      const u = usersDB[activeEditingUserId];
+      const checked = document.querySelectorAll('#modal-allergy-editor input:checked');
+      u.allergies = Array.from(checked).map(cb => cb.value);
+
+      // テーブル配下の全顧客のアレルゲンを集計
+      const allTableAllergies = tableState[selectedTableId].userIds.flatMap(uid => usersDB[uid].allergies);
+      const uniqueAllergies = [...new Set(allTableAllergies)];
+      const card = document.getElementById(`tbl-${selectedTableId}`);
+      const badges = document.getElementById(`tbl-${selectedTableId}-badges`);
+
+      if (uniqueAllergies.length > 0) {
+        card.classList.add('has-allergy');
+        card.classList.remove('no-ai');
+        badges.innerHTML = uniqueAllergies.map(a => `<span class="card-allergy-chip">${a}</span>`).join(' ');
+      } else {
+        card.classList.remove('has-allergy');
+        card.classList.add('no-ai');
+        badges.innerHTML = '';
+      }
+
+      closeModal();
+      showTableDetail(selectedTableId);
+      renderWaitingList();
+    }
+
+    // カラム幅ドラッグリサイズ制御
+    function initColumnResizers() {
+      const resizerLeft = document.getElementById('resizer-left');
+      const resizerRight = document.getElementById('resizer-right');
+      const appLayout = document.getElementById('app-layout');
+
+      // 左リサイザー（待合パネル幅調整）
+      let isDraggingLeft = false;
+      function startDragLeft(e) {
+        isDraggingLeft = true;
+        resizerLeft.classList.add('is-dragging');
+        document.body.style.cursor = 'col-resize';
+      }
+
+      // 右リサイザー（詳細パネル幅調整）
+      let isDraggingRight = false;
+      function startDragRight(e) {
+        isDraggingRight = true;
+        resizerRight.classList.add('is-dragging');
+        document.body.style.cursor = 'col-resize';
+      }
+
+      function onMouseMove(e) {
+        const clientX = e.clientX || (e.touches && e.touches[0].clientX);
+        if (!clientX) return;
+
+        if (isDraggingLeft) {
+          const layoutRect = appLayout.getBoundingClientRect();
+          let newWidth = clientX - layoutRect.left;
+          if (newWidth < 150) newWidth = 150;
+          if (newWidth > 460) newWidth = 460;
+          document.documentElement.style.setProperty('--left-panel-width', `${newWidth}px`);
+        } else if (isDraggingRight) {
+          const layoutRect = appLayout.getBoundingClientRect();
+          let newWidth = layoutRect.right - clientX;
+          if (newWidth < 220) newWidth = 220;
+          if (newWidth > 600) newWidth = 600;
+          document.documentElement.style.setProperty('--right-panel-width', `${newWidth}px`);
+        }
+      }
+
+      function stopDrag() {
+        if (isDraggingLeft || isDraggingRight) {
+          isDraggingLeft = false;
+          isDraggingRight = false;
+          resizerLeft.classList.remove('is-dragging');
+          resizerRight.classList.remove('is-dragging');
+          document.body.style.cursor = '';
+        }
+      }
+
+      resizerLeft.addEventListener('mousedown', startDragLeft);
+      resizerLeft.addEventListener('touchstart', startDragLeft, { passive: true });
+
+      resizerRight.addEventListener('mousedown', startDragRight);
+      resizerRight.addEventListener('touchstart', startDragRight, { passive: true });
+
+      window.addEventListener('mousemove', onMouseMove);
+      window.addEventListener('touchmove', onMouseMove, { passive: true });
+
+      window.addEventListener('mouseup', stopDrag);
+      window.addEventListener('touchend', stopDrag);
+    }
+
+    // ワンクリック幅変更関数
+    function setLeftWidth(w) {
+      document.documentElement.style.setProperty('--left-panel-width', `${w}px`);
+    }
+
+    function setRightWidth(w) {
+      document.documentElement.style.setProperty('--right-panel-width', `${w}px`);
+    }
+
+    function resetPanelWidths() {
+      document.documentElement.style.setProperty('--left-panel-width', '250px');
+      document.documentElement.style.setProperty('--right-panel-width', '350px');
+    }
+
+    function maximizeFloorMap() {
+      document.documentElement.style.setProperty('--left-panel-width', '160px');
+      document.documentElement.style.setProperty('--right-panel-width', '240px');
+    }
+
+    initColumnResizers();
+    renderWaitingList();
+    setupDropZones();
+    showTableDetail(1);
+  </script>
+</body>
+</html>
