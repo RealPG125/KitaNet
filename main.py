@@ -8,6 +8,7 @@ import sys
 import os
 import helper
 import asyncio
+import torch
 # import websocket
 from faster_whisper import WhisperModel
 from scipy.signal import resample_poly
@@ -23,6 +24,8 @@ SILENCE_THRESHOLD = 0.08
 LLM_TRIGGER_SILENCE_DURATION = 2.0
 
 class Mic:
+    stemIndexDict = ["drums", "bass", "other", "vocals"]
+
     def __init__(self, sampleRate: int | None = None, deviceIndex: int | None = None, chunkDuration: int | float = 0.5, flatten: bool = True, denoise: bool = True, manual: bool = False):
         self._pa = pyaudio.PyAudio()
         self.queue = queue.Queue()
@@ -38,7 +41,7 @@ class Mic:
         else:
             self.start(sampleRate = sampleRate, deviceIndex = deviceIndex, chunkDuration = chunkDuration, flatten = flatten, denoise = denoise)
 
-    def start(self, sampleRate: int | None = None, deviceIndex: int | None = None, chunkDuration: int | float = 0.5, flatten: bool = True, denoise: bool = True):
+    def start(self, sampleRate: int | None = None, deviceIndex: int | None = None, chunkDuration: int | float = 0.5, flatten: bool = True, denoise: bool = True, stem: bool = False):
         self.deviceIndex = int(self._pa.get_default_input_device_info()["index"]) if deviceIndex == None else deviceIndex
         self.sampleRate = int(self._pa.get_device_info_by_index(self.deviceIndex)["defaultSampleRate"]) if sampleRate == None else sampleRate
         self.channels = self._pa.get_device_info_by_index(self.deviceIndex)["maxInputChannels"]
@@ -50,11 +53,20 @@ class Mic:
             format = pyaudio.paFloat32, rate = self.sampleRate, channels = self.channels, input_device_index = self.deviceIndex, input = True, frames_per_buffer = self.chunkLength
         )
 
-        if (denoise):
+        if (denoise and not stem):
             self._denoise = True
             self._denoiser = RNNoise(self.sampleRate)
         else:
             self._denoise = False
+
+        if (stem):
+            import demucs.api
+
+            self._stem = True
+            self._separator = demucs.api.Separator()
+            self.stemIndex = input("Set stem index of [drums, bass, other, vocals] in format of 0/1 (e.g. 1110): ")
+        else:
+            self._stem = False
 
         threading.Thread(target = self._loop, daemon = True).start()
 
@@ -69,8 +81,8 @@ class Mic:
                     continue
                 sampleRate = input(f"Sample rate (enter to use device's default value {self._pa.get_device_info_by_index(deviceIndex)["defaultSampleRate"]}): ")
                 sampleRate = None if sampleRate == "" else int(sampleRate)
-                chunkDuration = input("Chunk duration (enter to use default value 0.5[s]): ")
-                chunkDuration = 0.5 if chunkDuration == "" else float(chunkDuration)
+                chunkDuration = input("Chunk duration (enter to use default value 1.0[s]): ")
+                chunkDuration = 1.0 if chunkDuration == "" else float(chunkDuration)
                 while True:
                     flatten = input("Flatten channels (true/false): ")
                     if (flatten == ""):
@@ -99,11 +111,25 @@ class Mic:
                             continue
                         denoise = denoise.lower() == "true"
                         break
+                while True:
+                    stem = input("Stem audio (true/false): ")
+                    if (stem == ""):
+                        stem = False
+                        print("Using default settings: False")
+                        break
+                    if (helper.succeeds(int, stem)[0]):
+                        stem = int(stem) != 0
+                        break
+                    else:
+                        if (stem.lower() not in ["true", "false"]):
+                            continue
+                        stem = stem.lower() == "true"
+                        break
                 break
             except ValueError:
                 pass
 
-        self.start(sampleRate = sampleRate, deviceIndex = deviceIndex, chunkDuration = chunkDuration, flatten = flatten, denoise = denoise)
+        self.start(sampleRate = sampleRate, deviceIndex = deviceIndex, chunkDuration = chunkDuration, flatten = flatten, denoise = denoise, stem = stem)
 
     def _loop(self):
         print(f"Mic {self.deviceIndex}: started loop with {self.sampleRate} hz sampling rate and {self.chunkLength} samples length chunk")
@@ -111,7 +137,7 @@ class Mic:
         while (self._running):
             rawBuffer = self._stream.read(self.chunkLength, exception_on_overflow = False)
             buffer = np.frombuffer(rawBuffer, dtype = np.float32)
-            if (self._denoise):
+            if (self._denoise and not self._stem):
                 audio = buffer.reshape(-1, self.channels).mean(axis = 1)
                 # audio = resample_poly(audio, 48000, self.sampleRate)
                 denoisedBuffer = [
@@ -125,6 +151,30 @@ class Mic:
                 buffer = audio.mean(axis = 0) if self._flatten else audio.T.ravel()
             elif self._flatten:
                 buffer = buffer.reshape(-1, self.channels).mean(axis = 1)
+
+            while True:
+                if (self._stem):
+                    if (self.channels == 2 and not self._flatten):
+                        buffer = buffer.reshape(-1, 2).T
+                    elif (self.channels == 1 or self._flatten):
+                        buffer = np.repeat(buffer[np.newaxis, :], 2, axis = 0)
+                    else:
+                        break
+
+                    bufferTensor = torch.from_numpy(buffer.copy())
+                    origin, stems = self._separator.separate_tensor(bufferTensor, self.sampleRate)
+                    bufferEmpty = True
+                    for index, (stemName, stemTensor) in enumerate(stems.items()):
+                        # print(f"{index}, {stemName}")
+                        if (self.stemIndex[self.stemIndexDict.index(stemName)] != "0"):
+                            buffer = stemTensor.squeeze(0).cpu().numpy().T if bufferEmpty else buffer + stemTensor.squeeze(0).cpu().numpy().T
+                            bufferEmpty = False
+                    if (self.channels == 1 or self._flatten):
+                        buffer = buffer[:, 0]
+                    buffer = resample_poly(buffer, self.sampleRate, 44100).ravel()
+                    break
+                else:
+                    break
 
             self.queue.put(buffer.astype(np.float32))
             self.queuePlayback.put(buffer.astype(np.float32))
@@ -239,7 +289,7 @@ class WhisperObject:
                         break 
             while True:
                 computeTypeAvailable = WhisperObject.computeType[0 if self._device == "cpu" else 1]
-                self._computeType = input(f"Select compute type ({str(computeTypeAvailable)}): ")
+                self._computeType = input(f"Select compute type ({str(computeTypeAvailable)[1:-1]}): ")
                 if (self._computeType in computeTypeAvailable):
                     break
                 elif (self._computeType == ""):
@@ -432,10 +482,13 @@ class Transcriber:
             # stereo only
             audioSlice = self.mic.queuePlayback.get()
             if (self._speaker != None):
-                audio = resample_poly(audioSlice, self._speaker.sampleRate, self.mic.sampleRate).astype(np.float32)
-                audio = np.repeat(audio[:, np.newaxis], self._speaker.channels, axis = 1).ravel()
+                if (self._speaker.sampleRate != self.mic.sampleRate):
+                    audio = resample_poly(audioSlice, self._speaker.sampleRate, self.mic.sampleRate).astype(np.float32)
+                else:
+                    audio = audioSlice.astype(np.float32).ravel()
+                # audio = np.repeat(audio[:, np.newaxis], self._speaker.channels, axis = 1).ravel()
 
-                self._speaker.play(audio)
+                self._speaker.play(audio, sourceChannels = self.mic.channels if not self.mic._flatten else 1)
 
     async def _diarization(self):
         while True:
@@ -469,21 +522,19 @@ class Transcriber:
 
 class DiarizationTool:
     def __init__(self):
-        import torch
         from pyannote.audio import Pipeline
-
-        self._torch = torch
-        self._torch.backends.cuda.matmul.allow_tf32 = False
-        self._torch.backends.cudnn.allow_tf32 = False
-        # self._torch.backends.cuda.matmul.fp32_precision = "ieee"
-        # self._torch.backends.cudnn.fp32_precision = "ieee"
+        
+        torch.backends.cuda.matmul.allow_tf32 = False
+        torch.backends.cudnn.allow_tf32 = False
+        # torch.backends.cuda.matmul.fp32_precision = "ieee"
+        # torch.backends.cudnn.fp32_precision = "ieee"
         self._pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-community-1", token="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")
-        self._pipeline.to(self._torch.device("cuda"))
+        self._pipeline.to(torch.device("cuda"))
         self.output = None
 
     def process(self, audioData, sampleRate: int):
         self.output = self._pipeline({
-            "waveform": self._torch.from_numpy(audioData).unsqueeze(0),
+            "waveform": torch.from_numpy(audioData).unsqueeze(0),
             "sample_rate": sampleRate,
         })
         return self.output
