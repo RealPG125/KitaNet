@@ -40,6 +40,7 @@ class Mic:
             self.start_manual()
         else:
             self.start(sampleRate = sampleRate, deviceIndex = deviceIndex, chunkDuration = chunkDuration, flatten = flatten, denoise = denoise)
+        self.ready = False
 
     def start(self, sampleRate: int | None = None, deviceIndex: int | None = None, chunkDuration: int | float = 0.5, flatten: bool = True, denoise: bool = True, stem: bool = False):
         self.deviceIndex = int(self._pa.get_default_input_device_info()["index"]) if deviceIndex == None else deviceIndex
@@ -63,7 +64,7 @@ class Mic:
             import demucs.api
 
             self._stem = True
-            self._separator = demucs.api.Separator()
+            self._separator = demucs.api.Separator(model = "htdemucs", shifts = 1, device = "cuda" if torch.cuda.is_available() else "cpu")
             self.stemIndex = input("Set stem index of [drums, bass, other, vocals] in format of 0/1 (e.g. 1110): ")
         else:
             self._stem = False
@@ -134,7 +135,13 @@ class Mic:
     def _loop(self):
         print(f"Mic {self.deviceIndex}: started loop with {self.sampleRate} hz sampling rate and {self.chunkLength} samples length chunk")
 
+        bufferPaddingLength = min(0.6, self.chunkDuration / 2)
+        bufferPaddingLength = int(bufferPaddingLength * self.sampleRate)
+        bufferPadding = np.zeros(bufferPaddingLength * self.channels).astype(np.float32)
+
         while (self._running):
+            if (not self.ready):
+                continue
             rawBuffer = self._stream.read(self.chunkLength, exception_on_overflow = False)
             buffer = np.frombuffer(rawBuffer, dtype = np.float32)
             if (self._denoise and not self._stem):
@@ -154,6 +161,8 @@ class Mic:
 
             while True:
                 if (self._stem):
+                    buffer = np.concatenate([bufferPadding, buffer])
+                    bufferPadding = buffer[-bufferPaddingLength * self.channels:]
                     if (self.channels == 2 and not self._flatten):
                         buffer = buffer.reshape(-1, 2).T
                     elif (self.channels == 1 or self._flatten):
@@ -172,6 +181,7 @@ class Mic:
                     if (self.channels == 1 or self._flatten):
                         buffer = buffer[:, 0]
                     buffer = resample_poly(buffer, self.sampleRate, 44100).ravel()
+                    buffer = buffer[bufferPaddingLength : -bufferPaddingLength]
                     break
                 else:
                     break
@@ -257,23 +267,23 @@ class WhisperObject:
     computeType = [["int8", "float32"], ["int8", "float16", "float32"]]
 
     def __init__(self, modelSize: str | int = "base", device: str = "cpu", computeType: str = "int8", language: str | None = None, manual: bool = False):
-        self._modelSize = modelSize
+        self.modelSize = modelSize
         self._device = device
         self._computeType = computeType
         self._language = language
 
         if (manual):
             while True:
-                self._modelSize = input(f"Select model ({str(WhisperObject.models)[1:-1]}): ")
-                if (self._modelSize in WhisperObject.models):
+                self.modelSize = input(f"Select model ({str(WhisperObject.models)[1:-1]}): ")
+                if (self.modelSize in WhisperObject.models):
                     break
-                elif (self._modelSize == ""):
-                    self._modelSize = "small"
-                    print(f"Using default model: {self._modelSize}")
+                elif (self.modelSize == ""):
+                    self.modelSize = "small"
+                    print(f"Using default model: {self.modelSize}")
                     break
-                elif (modelSizeIndex := helper.succeeds(int, self._modelSize))[0]:
-                    if (0 <= modelSizeIndex[1] < len(WhisperObject.models)):
-                        self._modelSize = WhisperObject.models[modelSizeIndex[1]]
+                elif (modelSizeIndex := helper.succeeds(int, self.modelSize))[0]:
+                    if (-1 <= modelSizeIndex[1] < len(WhisperObject.models)):
+                        self.modelSize = WhisperObject.models[modelSizeIndex[1]] if modelSizeIndex[1] != -1 else None
                         break
             while True:
                 self._device = input("Select device (cpu, cuda)): ")
@@ -301,7 +311,8 @@ class WhisperObject:
                         self._computeType = computeTypeAvailable[computeTypeIndex[1]]
                         break
 
-        self._model = WhisperModel(self._modelSize, device = self._device, compute_type = self._computeType)
+        if (self.modelSize != None):
+            self._model = WhisperModel(self.modelSize, device = self._device, compute_type = self._computeType)
 
         if (manual):
             while True:
@@ -318,20 +329,27 @@ class WhisperObject:
                             break
 
     def transcribe(self, audioData, contextual: bool | None = None, beamSize: int = 5, filter: bool = True):
-        segments, info = self._model.transcribe(audioData, beam_size = beamSize, vad_filter = filter, task = "transcribe", condition_on_previous_text = self._contextual if contextual == None else contextual, language = self._language)
-        segments = list(segments)
+        if (self.modelSize != None):
+            segments, info = self._model.transcribe(audioData, beam_size = beamSize, vad_filter = filter, task = "transcribe", condition_on_previous_text = self._contextual if contextual == None else contextual, language = self._language)
+            segments = list(segments)
 
-        return segments, info
+            return segments, info
+        else:
+            return None, None
 
     def transcribe_to_text(self, audioData, contextual: bool | None = None, beamSize: int = 5, filter: bool = True, splitParts: bool = False):
-        segments, info = self.transcribe(audioData, contextual = contextual, beamSize = beamSize, filter = filter)
-        text = ""
-        language = info.language
+        if (self.modelSize != None):
+            segments, info = self.transcribe(audioData, contextual = contextual, beamSize = beamSize, filter = filter)
+            text = ""
+            language = info.language
 
-        for index, segment in enumerate(segments):
-            text += (f"[{index}]" if splitParts else "") + segment.text + (f"<>{segment.start} - {segment.end}" if splitParts and (index < len(segments) - 1) else "")
+            for index, segment in enumerate(segments):
+                text += (f"[{index}]" if splitParts else "") + segment.text + (f"<>{segment.start} - {segment.end}" if splitParts and (index < len(segments) - 1) else "")
 
-        return text, language
+            return text, language
+        else:
+            return "", ""
+
 
 class Transcriber:
     transcriberID = 0
@@ -662,7 +680,8 @@ async def main():
                 pass
         Transcriber.transcriptionLock = asyncio.Lock()
         whisperObject = WhisperObject(manual = True)
-        print("Initiated whisper\n")
+        if (whisperObject.modelSize != None):
+            print("Initiated whisper\n")
         transcribers = [Transcriber(whisperObject = whisperObject, manual = True) for _ in range(instancesCount)]
 
         while True:
@@ -687,6 +706,9 @@ async def main():
         silentTime = 0.0
         startTime = time.perf_counter()
         spoken = False
+
+        for transcriber in transcribers:
+            transcriber.mic.ready = True
         
         while True:
             speakerCount = 0
