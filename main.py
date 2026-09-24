@@ -20,7 +20,7 @@ from pydub import AudioSegment
 # device    : "cpu", Nvidia GPU: "cuda"
 
 MAX_BUFFER_DURATION = 20
-SILENCE_THRESHOLD = 0.08
+SILENCE_THRESHOLD = 0.035
 LLM_TRIGGER_SILENCE_DURATION = 2.0
 
 class Mic:
@@ -141,6 +141,7 @@ class Mic:
 
         while (self._running):
             if (not self.ready):
+                time.sleep(0.1)
                 continue
             rawBuffer = self._stream.read(self.chunkLength, exception_on_overflow = False)
             buffer = np.frombuffer(rawBuffer, dtype = np.float32)
@@ -521,7 +522,7 @@ class Transcriber:
             # else:
             #     await asyncio.sleep(MAX_BUFFER_DURATION / 8)
 
-    def flushBuffer(self):
+    def flush_buffer(self):
         self._buffer = np.empty(0, dtype = np.float32)
 
     def close(self):
@@ -571,7 +572,7 @@ class TTS:
 
         self._speaker = Speaker(manual = manual)
     
-    def promptManual(self):
+    def prompt_manual(self):
         if (self.manual):
             for index, voice in enumerate(self._voiceShortnames):
                 print(f"[{index}] {voice}")
@@ -603,7 +604,7 @@ class TTS:
         audioData = audioData.astype(np.float32) / np.iinfo(np.int16).max
         self._speaker.play(audioData, sourceSampleRate = 24000, sourceChannels = 1)
 
-    def stopAudio(self):
+    def stop_audio(self):
         self._speaker.abortPlayback()
 
     @classmethod
@@ -611,7 +612,7 @@ class TTS:
         instance = cls(voiceModel = voiceModel, manual = manual)
         instance._voiceList = await instance.edgeTTS.voices.list_voices()
         instance._voiceShortnames = [voice["ShortName"] for voice in instance._voiceList]
-        instance.promptManual()
+        instance.prompt_manual()
         return instance
 
 class LLM:
@@ -631,33 +632,33 @@ class LLM:
                     break
                 elif (returnTuple := helper.succeeds(int, model))[0]:
                     if (0 <= returnTuple[1] < len(modelsList)):
-                        model = modelsList[returnTuple[1]]
+                        model = modelsList[returnTuple[1]].model
                         break
                     
         self.model = model
         self.tts = tts
         self._enableAudio = enableAudio
-        self.systemPrompt = "Reply in the same language as the input text. Be a casual chatting company and reply slightly short." if systemPrompt == None else systemPrompt
+        self.systemPrompt = "Reply in the same language as the input text. Be a casual chatting company." if systemPrompt == None else systemPrompt
         self._response = None
 
-    def getResponse(self, message: str | None = None):
+    def get_response(self, message: str | None = None):
         self._response = self.ollama.chat(model = self.model, messages = [
             {"role": "system", "content": self.systemPrompt},
             {"role": "user", "content": message}
             ]) if message != None else "Empty input message"
         return self._response
 
-    def getTextResponse(self, message: str | None = None) -> str:
-        return self.getResponse(message = message)['message']['content']
+    def get_text_response(self, message: str | None = None) -> str:
+        return self.get_response(message = message)['message']['content']
 
-    def audioChat(self, message: str | None = None, language: str = "en"):
+    def audio_chat(self, message: str | None = None, language: str = "en"):
         if (not self._enableAudio):
             print("Audio is disabled")
         else:
-            self.tts.speak(text = self.getTextResponse(message = message), language = language)
+            self.tts.speak(text = self.get_text_response(message = message), language = language)
 
-    def stopAudio(self):
-        self.tts.stopAudio()
+    def stop_audio(self):
+        self.tts.stop_audio()
 
     @classmethod
     async def create(cls, model: str = "llama3.2", systemPrompt: str | None = None, enableAudio: bool = True, manual: bool = False):
@@ -775,9 +776,9 @@ async def main():
                 # llm.stopAudio()
                 message = transcribers[lastPeakTranscriber].transcribeText
                 if (message != ""):
-                    llm.audioChat(message = message, language = transcribers[lastPeakTranscriber].language)
+                    llm.audio_chat(message = message, language = transcribers[lastPeakTranscriber].language)
                 for transcriber in transcribers:
-                    transcriber.flushBuffer()
+                    transcriber.flush_buffer()
                 silentTime = 0
                 spoken = False
                 
