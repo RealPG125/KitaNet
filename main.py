@@ -1,795 +1,215 @@
-import numpy as np
-import pyaudiowpatch as pyaudio
-import threading
-import queue
+import sqlite3
 import time
-import wave
-import sys
-import os
-import helper
-import asyncio
-import torch
-# import websocket
-from faster_whisper import WhisperModel
-from scipy.signal import resample_poly
-from pyrnnoise_customfork import RNNoise
-from io import BytesIO
-from pydub import AudioSegment
+from datetime import datetime
+from typing import List, Optional
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+from pydantic import BaseModel
 
-# model     : 軽 → 重: "tiny" (75MB), "base" (142MB), "small" (466MB), "medium" (1.5GB), "large-v3" (3.0GB)
-# device    : "cpu", Nvidia GPU: "cuda"
+app = FastAPI(title="店舗接客フロア管理システム")
 
-MAX_BUFFER_DURATION = 20
-SILENCE_THRESHOLD = 0.035
-LLM_TRIGGER_SILENCE_DURATION = 2.0
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-class Mic:
-    stemIndexDict = ["drums", "bass", "other", "vocals"]
+DB_FILE = "restaurant.db"
 
-    def __init__(self, sampleRate: int | None = None, deviceIndex: int | None = None, chunkDuration: int | float = 0.5, flatten: bool = True, denoise: bool = True, manual: bool = False):
-        self._pa = pyaudio.PyAudio()
-        self.queue = queue.Queue()
-        self.queuePlayback = queue.Queue()
-        self._running = False
-        self.peakAmplitude = -1
-        self._devices = {
-            index: self._pa.get_device_info_by_index(index) for index in range(self._pa.get_device_count())
-            if self._pa.get_device_info_by_index(index)["maxInputChannels"] > 0
-        }
-        if (manual):
-            self.start_manual()
-        else:
-            self.start(sampleRate = sampleRate, deviceIndex = deviceIndex, chunkDuration = chunkDuration, flatten = flatten, denoise = denoise)
-        self.ready = False
+def get_db():
+    conn = sqlite3.connect(DB_FILE)
+    conn.row_factory = sqlite3.Row
+    return conn
 
-    def start(self, sampleRate: int | None = None, deviceIndex: int | None = None, chunkDuration: int | float = 0.5, flatten: bool = True, denoise: bool = True, stem: bool = False):
-        self.deviceIndex = int(self._pa.get_default_input_device_info()["index"]) if deviceIndex == None else deviceIndex
-        self.sampleRate = int(self._pa.get_device_info_by_index(self.deviceIndex)["defaultSampleRate"]) if sampleRate == None else sampleRate
-        self.channels = self._pa.get_device_info_by_index(self.deviceIndex)["maxInputChannels"]
-        self.chunkDuration = chunkDuration
-        self.chunkLength = int(self.chunkDuration * self.sampleRate)
-        self._flatten = flatten
-        self._running = True
-        self._stream = self._pa.open(
-            format = pyaudio.paFloat32, rate = self.sampleRate, channels = self.channels, input_device_index = self.deviceIndex, input = True, frames_per_buffer = self.chunkLength
-        )
+# ── リクエストモデル ──
+class SingleUserPayload(BaseModel):
+    name: str
+    region: Optional[str] = "未登録"
+    allergies: List[str] = []
+    hint: Optional[str] = ""
 
-        if (denoise and not stem):
-            self._denoise = True
-            self._denoiser = RNNoise(self.sampleRate)
-        else:
-            self._denoise = False
+class GroupRegisterRequest(BaseModel):
+    users: List[SingleUserPayload]
 
-        if (stem):
-            import demucs.api
+class UserUpdateRequest(BaseModel):
+    name: str
+    region: Optional[str] = "未登録"
+    count: int = 1
+    hint: Optional[str] = ""
+    allergies: List[str] = []
+    favs: List[str] = []
 
-            self._stem = True
-            self._separator = demucs.api.Separator(model = "htdemucs", shifts = 1, device = "cuda" if torch.cuda.is_available() else "cpu")
-            self.stemIndex = input("Set stem index of [drums, bass, other, vocals] in format of 0/1 (e.g. 1110): ")
-        else:
-            self._stem = False
+class AssignRequest(BaseModel):
+    table_id: int
+    user_ids: List[str]
+    session_id: str
 
-        threading.Thread(target = self._loop, daemon = True).start()
+# ── API エンドポイント ──
 
-    def start_manual(self):
-        for index, device in self._devices.items():
-            print(f"[{index}] {device['name']}")
+# 1. データベースから全顧客情報（好物・アレルギー・メモ含む）を取得
+@app.get("/api/users")
+def get_all_users():
+    with get_db() as conn:
+        users = conn.execute("SELECT * FROM UserData").fetchall()
+        result = {}
+        for u in users:
+            uid = u["id"]
+            # アレルギー名
+            algs = conn.execute("""
+                SELECT a.name FROM UserAllergy ua
+                JOIN Allergy a ON ua.allergy_id = a.id
+                WHERE ua.user_id = ?
+            """, (uid,)).fetchall()
+            # お気に入りメニュー
+            favs = conn.execute("""
+                SELECT m.name FROM UserMenuPreference ump
+                JOIN Menu m ON ump.menu_id = m.id
+                WHERE ump.user_id = ?
+            """, (uid,)).fetchall()
+            # 最新メモ
+            mem = conn.execute("""
+                SELECT memory_content FROM UserMemory
+                WHERE user_id = ? ORDER BY id DESC LIMIT 1
+            """, (uid,)).fetchone()
+            # セッション履歴
+            sess = conn.execute("""
+                SELECT ts.id as sId, ts.table_id as tId, ts.start_datetime as [in], ts.end_datetime as [out]
+                FROM TableSessionMembers tsm
+                JOIN TableSession ts ON tsm.table_session_id = ts.id
+                WHERE tsm.user_id = ?
+                ORDER BY ts.start_datetime DESC
+            """, (uid,)).fetchall()
 
-        while True:
-            try:
-                deviceIndex = int(input("\nSelect input device index: "))
-                if deviceIndex not in self._devices:
-                    continue
-                sampleRate = input(f"Sample rate (enter to use device's default value {self._pa.get_device_info_by_index(deviceIndex)["defaultSampleRate"]}): ")
-                sampleRate = None if sampleRate == "" else int(sampleRate)
-                chunkDuration = input("Chunk duration (enter to use default value 1.0[s]): ")
-                chunkDuration = 1.0 if chunkDuration == "" else float(chunkDuration)
-                while True:
-                    flatten = input("Flatten channels (true/false): ")
-                    if (flatten == ""):
-                        flatten = True
-                        print("Using default settings: True")
-                        break
-                    if (helper.succeeds(int, flatten)[0]):
-                        flatten = int(flatten) != 0
-                        break
-                    else:
-                        if (flatten.lower() not in ["true", "false"]):
-                            continue
-                        flatten = flatten.lower() == "true"
-                        break
-                while True:
-                    denoise = input("Denoise audio (true/false): ")
-                    if (denoise == ""):
-                        denoise = False
-                        print("Using default settings: False")
-                        break
-                    if (helper.succeeds(int, denoise)[0]):
-                        denoise = int(denoise) != 0
-                        break
-                    else:
-                        if (denoise.lower() not in ["true", "false"]):
-                            continue
-                        denoise = denoise.lower() == "true"
-                        break
-                while True:
-                    stem = input("Stem audio (true/false): ")
-                    if (stem == ""):
-                        stem = False
-                        print("Using default settings: False")
-                        break
-                    if (helper.succeeds(int, stem)[0]):
-                        stem = int(stem) != 0
-                        break
-                    else:
-                        if (stem.lower() not in ["true", "false"]):
-                            continue
-                        stem = stem.lower() == "true"
-                        break
-                break
-            except ValueError:
-                pass
+            result[uid] = {
+                "id": uid,
+                "name": u["name"],
+                "region": u["region"] or "未登録",
+                "count": u["visit_count"] if "visit_count" in u.keys() else 1,
+                "last": u["last_visit"] or "-",
+                "allergies": [a["name"] for a in algs],
+                "favs": [f["name"] for f in favs],
+                "hint": mem["memory_content"] if mem else "",
+                "sessions": [dict(s) for s in sess]
+            }
+        return result
 
-        self.start(sampleRate = sampleRate, deviceIndex = deviceIndex, chunkDuration = chunkDuration, flatten = flatten, denoise = denoise, stem = stem)
+# 2. 新規受付（グループ一括登録）
+@app.post("/api/register-group")
+def register_group(req: GroupRegisterRequest):
+    created_user_ids = []
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+    today_date = datetime.now().strftime("%Y-%m-%d")
 
-    def _loop(self):
-        print(f"Mic {self.deviceIndex}: started loop with {self.sampleRate} hz sampling rate and {self.chunkLength} samples length chunk")
+    with get_db() as conn:
+        for idx, u in enumerate(req.users):
+            uid = f"u-{int(time.time()*1000)}-{idx+1}"
+            conn.execute("""
+                INSERT INTO UserData (id, name, region, join_datetime, last_visit)
+                VALUES (?, ?, ?, ?, ?)
+            """, (uid, u.name, u.region, now_str, now_str))
 
-        bufferPaddingLength = min(0.6, self.chunkDuration / 2)
-        bufferPaddingLength = int(bufferPaddingLength * self.sampleRate)
-        bufferPadding = np.zeros(bufferPaddingLength * self.channels).astype(np.float32)
-
-        while (self._running):
-            if (not self.ready):
-                time.sleep(0.1)
-                continue
-            rawBuffer = self._stream.read(self.chunkLength, exception_on_overflow = False)
-            buffer = np.frombuffer(rawBuffer, dtype = np.float32)
-            if (self._denoise and not self._stem):
-                audio = buffer.reshape(-1, self.channels).mean(axis = 1)
-                # audio = resample_poly(audio, 48000, self.sampleRate)
-                denoisedBuffer = [
-                    denoised for _, denoised in self._denoiser.denoise_chunk(audio)
-                ]
-                if not denoisedBuffer:
-                    continue
-                audio = np.concatenate(denoisedBuffer, axis = 1)
-                audio = audio.astype(np.float32) / np.iinfo(np.int16).max
-                # audio = resample_poly(audio, self.sampleRate, 48000)
-                buffer = audio.mean(axis = 0) if self._flatten else audio.T.ravel()
-            elif self._flatten:
-                buffer = buffer.reshape(-1, self.channels).mean(axis = 1)
-
-            while True:
-                if (self._stem):
-                    buffer = np.concatenate([bufferPadding, buffer])
-                    bufferPadding = buffer[-bufferPaddingLength * self.channels:]
-                    if (self.channels == 2 and not self._flatten):
-                        buffer = buffer.reshape(-1, 2).T
-                    elif (self.channels == 1 or self._flatten):
-                        buffer = np.repeat(buffer[np.newaxis, :], 2, axis = 0)
-                    else:
-                        break
-
-                    bufferTensor = torch.from_numpy(buffer.copy())
-                    origin, stems = self._separator.separate_tensor(bufferTensor, self.sampleRate)
-                    bufferEmpty = True
-                    for index, (stemName, stemTensor) in enumerate(stems.items()):
-                        # print(f"{index}, {stemName}")
-                        if (self.stemIndex[self.stemIndexDict.index(stemName)] != "0"):
-                            buffer = stemTensor.squeeze(0).cpu().numpy().T if bufferEmpty else buffer + stemTensor.squeeze(0).cpu().numpy().T
-                            bufferEmpty = False
-                    if (self.channels == 1 or self._flatten):
-                        buffer = buffer[:, 0]
-                    buffer = resample_poly(buffer, self.sampleRate, 44100).ravel()
-                    buffer = buffer[bufferPaddingLength : -bufferPaddingLength]
-                    break
+            # アレルギー登録
+            for alg_name in u.allergies:
+                row = conn.execute("SELECT id FROM Allergy WHERE name = ?", (alg_name,)).fetchone()
+                if row:
+                    alg_id = row["id"]
                 else:
-                    break
-
-            self.queue.put(buffer.astype(np.float32))
-            self.queuePlayback.put(buffer.astype(np.float32))
-
-            self.peakAmplitude = np.max(np.abs(buffer))
-            
-    def stop(self):
-        self._running = False
-        self._stream.stop_stream()
-        self._stream.close()
-        self._pa.terminate()
-        print(f"Mic {self.deviceIndex}: successfully stopped")
-
-class Speaker:
-    def __init__(self, sampleRate: int | None = None, deviceIndex: int | None = None, manual: bool = False):
-        self._pa = pyaudio.PyAudio()
-        self._devices = {
-            index: self._pa.get_device_info_by_index(index) for index in range(self._pa.get_device_count())
-            if self._pa.get_device_info_by_index(index)["maxOutputChannels"] > 0
-        }
-        if (manual):
-            self._stream = self.open_manual()
-        else:
-            self._stream = self._open(sampleRate = sampleRate, deviceIndex = deviceIndex)
-
-    def _open(self, sampleRate: int | None = None, deviceIndex: int | None = None) -> pyaudio.Stream:
-        self.deviceIndex = int(self._pa.get_default_output_device_info()["index"]) if deviceIndex == None else deviceIndex
-        self.sampleRate = int(self._pa.get_device_info_by_index(self.deviceIndex)["defaultSampleRate"]) if sampleRate == None else sampleRate
-        self.channels = self._pa.get_device_info_by_index(self.deviceIndex)["maxOutputChannels"]
-        return self._pa.open(
-            format = pyaudio.paFloat32, rate = self.sampleRate, channels = self.channels, output = True, output_device_index = self.deviceIndex
-        )
-
-    def open_manual(self):
-        for index, device in self._devices.items():
-            print(f"[{index}] {device['name']}")
-
-        while True:
-            try:
-                deviceIndex = int(input("\nSelect output device index: "))
-                if deviceIndex not in self._devices:
-                    continue
-                sampleRate = input(f"Sample rate (enter to use device's default value {self._pa.get_device_info_by_index(deviceIndex)["defaultSampleRate"]}): ")
-                sampleRate = int(self._pa.get_device_info_by_index(deviceIndex)["defaultSampleRate"]) if sampleRate == "" else int(sampleRate)
-                break
-            except ValueError:
-                pass
-
-        return self._open(sampleRate = sampleRate, deviceIndex = deviceIndex)
-
-    def play(self, audioSample, sourceSampleRate: int | None = None, sourceChannels: int | None = None):
-        if (sourceSampleRate != None):
-            audioSample = resample_poly(audioSample, self.sampleRate, sourceSampleRate)
-        if (sourceChannels != None):
-            if (sourceChannels != self.channels):
-                audioSample = audioSample.reshape(-1, sourceChannels).mean(axis = 1)
-                audioSample = np.repeat(audioSample[:, np.newaxis], self.channels, axis = 1).ravel()
-        self._stream.write(audioSample.tobytes())
-
-    def restart(self):
-        try:
-            self._stream.stop_stream()
-            self._stream.close()
-        except Exception:
-            pass
-
-        self._stream = self._open()
-
-    def abortPlayback(self):
-        # find ways to safely restart stream
-        pass
-
-    def close(self):
-        self._stream.stop_stream()
-        self._stream.close()
-        self._pa.terminate()
-
-class WhisperObject:
-    models = ["tiny", "base", "small", "medium", "large-v3"]
-    computeType = [["int8", "float32"], ["int8", "float16", "float32"]]
-
-    def __init__(self, modelSize: str | int = "base", device: str = "cpu", computeType: str = "int8", language: str | None = None, manual: bool = False):
-        self.modelSize = modelSize
-        self._device = device
-        self._computeType = computeType
-        self._language = language
-
-        if (manual):
-            while True:
-                self.modelSize = input(f"Select model ({str(WhisperObject.models)[1:-1]}): ")
-                if (self.modelSize in WhisperObject.models):
-                    break
-                elif (self.modelSize == ""):
-                    self.modelSize = "small"
-                    print(f"Using default model: {self.modelSize}")
-                    break
-                elif (modelSizeIndex := helper.succeeds(int, self.modelSize))[0]:
-                    if (-1 <= modelSizeIndex[1] < len(WhisperObject.models)):
-                        self.modelSize = WhisperObject.models[modelSizeIndex[1]] if modelSizeIndex[1] != -1 else None
-                        break
-            while True:
-                self._device = input("Select device (cpu, cuda)): ")
-                if (self._device in ["cpu", "cuda"]):
-                    break
-                elif (self._device == ""):
-                    self._device = "cuda"
-                    print(f"Using default device: {self._device}")
-                    break
-                elif (deviceIndex := helper.succeeds(int, self._device))[0]:
-                    if (0 <= deviceIndex[1] <= 1):
-                        self._device = ["cpu", "cuda"][deviceIndex[1]]
-                        break 
-            while True:
-                computeTypeAvailable = WhisperObject.computeType[0 if self._device == "cpu" else 1]
-                self._computeType = input(f"Select compute type ({str(computeTypeAvailable)[1:-1]}): ")
-                if (self._computeType in computeTypeAvailable):
-                    break
-                elif (self._computeType == ""):
-                    self._computeType = "int8" if self._device == "cpu" else "float16"
-                    print(f"Using default compute type for device {self._device}: {self._computeType}")
-                    break
-                elif (computeTypeIndex := helper.succeeds(int, self._computeType))[0]:
-                    if (0 <= computeTypeIndex[1] < len(computeTypeAvailable)):
-                        self._computeType = computeTypeAvailable[computeTypeIndex[1]]
-                        break
-
-        if (self.modelSize != None):
-            self._model = WhisperModel(self.modelSize, device = self._device, compute_type = self._computeType)
-
-        if (manual):
-            while True:
-                self._language = input("Select language (type \"list\" to display list): ")
-                match (self._language):
-                    case "":
-                        self._language = None
-                        print("No language specified, detecting all languages")
-                        break
-                    case "list":
-                        print(f"Available languages: {str(self._model.supported_languages)[1:-1]}")
-                    case _:
-                        if (self._language in self._model.supported_languages):
-                            break
-
-    def transcribe(self, audioData, contextual: bool | None = None, beamSize: int = 5, filter: bool = True):
-        if (self.modelSize != None):
-            segments, info = self._model.transcribe(audioData, beam_size = beamSize, vad_filter = filter, task = "transcribe", condition_on_previous_text = self._contextual if contextual == None else contextual, language = self._language)
-            segments = list(segments)
-
-            return segments, info
-        else:
-            return None, None
-
-    def transcribe_to_text(self, audioData, contextual: bool | None = None, beamSize: int = 5, filter: bool = True, splitParts: bool = False):
-        if (self.modelSize != None):
-            segments, info = self.transcribe(audioData, contextual = contextual, beamSize = beamSize, filter = filter)
-            text = ""
-            language = info.language
-
-            for index, segment in enumerate(segments):
-                text += (f"[{index}]" if splitParts else "") + segment.text + (f"<>{segment.start} - {segment.end}" if splitParts and (index < len(segments) - 1) else "")
-
-            return text, language
-        else:
-            return "", ""
-
-
-class Transcriber:
-    transcriberID = 0
-    transcriptionLock: asyncio.Lock | None = None
-
-    def __init__(self, name: str | None = None, whisperObject: WhisperObject | None = None, speaker: bool = False, beamSize: int = 1, filter: bool = True, useContextual: str | int = 1, splitParts: bool = False, manual: bool = True, diarization: bool = False):
-        if (whisperObject == None):
-            raise ValueError("Error: whisperObject cannot be empty")
-        self.name = name if name != None else f"Transcriber{Transcriber.transcriberID}"
-        self.id = Transcriber.transcriberID
-        Transcriber.transcriberID += 1
-        self.mic = Mic(manual = manual) # OPEN FOR DEBUG, CHANGE TO PROTECTED LATER
-
-        if (manual):
-            while True:
-                speaker = input("Use speaker playback (true/false): ")
-                if (speaker == ""):
-                    speaker = False
-                    print("Using default settings: False")
-                    break
-                elif (returnTuple := helper.succeeds(int, speaker))[0]:
-                    speaker = returnTuple[1]
-                    break
-                else:
-                    if (speaker.lower() not in ["true", "false"]):
-                        continue
-                    speaker = speaker.lower() == "true"
-                    break
-            while True:
-                null, beamSize = helper.succeeds(int, input("Beam size (1~20): "))
-                if (0 < beamSize < 21):
-                    break
-            while True:
-                filter = input("Use filter (true/false): ")
-                if (filter == ""):
-                    filter = True
-                    print("Using default settings: True")
-                    break
-                elif (returnTuple := helper.succeeds(int, filter))[0]:
-                    filter = returnTuple[1]
-                    break
-                else:
-                    if (filter.lower() not in ["true", "false"]):
-                        continue
-                    filter = filter.lower() == "true"
-                    break
-            while True:
-                useContextual = input("Use contextual (true/false/both): ")
-                if (useContextual == ""):
-                    useContextual = 1
-                    print("Using default settings: True")
-                    break
-                elif (returnTuple := helper.succeeds(int, useContextual))[0]:
-                    if (0 <= returnTuple[1] <= 2):
-                        useContextual = returnTuple[1]
-                        break
-                else:
-                    if (useContextual.lower() in ["true", "false", "both"]):
-                        useContextual = ["false", "true", "both"].index(useContextual.lower())
-                        break
-            while True:
-                diarization = input("Enable diarization preview (true/false): ")
-                if (diarization == ""):
-                    diarization = False
-                    print("Using default settings: False")
-                    break
-                elif (returnTuple := helper.succeeds(int, diarization))[0]:
-                    if (0 <= returnTuple[1] <= 1):
-                        diarization = returnTuple[1] == 1
-                        break
-                else:
-                    if (diarization.lower() in ["true", "false"]):
-                        diarization = diarization.lower() == "true"
-                        break
-            while True:
-                splitParts = input("Split transcription sections (true/false): ")
-                if (splitParts == ""):
-                    splitParts = False
-                    print("Using default settings: False")
-                    break
-                elif (returnTuple := helper.succeeds(int, splitParts))[0]:
-                    if (0 <= returnTuple[1] <= 1):
-                        splitParts = returnTuple[1] == 1
-                        break
-                else:
-                    if (splitParts.lower() in ["true", "false"]):
-                        splitParts = splitParts.lower() == "true"
-                        break
-
-        self._speaker = Speaker(manual = manual) if speaker else None
-        self._model = whisperObject
-        self._diarizationTool = DiarizationTool() if diarization else None
-        self.enableDiarization = diarization
-        self.diarizationOutput = None
-        self._splitParts = splitParts
-        self.transcribeText = ""
-        self.transcribeTextNoncontextual = ""
-        self.language = ""
-        self.languageNoncontextual = ""
-        self._beamSize = beamSize
-        self._filter = filter
-        self.timeToTranscribe = 0.0
-        self._buffer = np.empty(0, dtype = np.float32)
-        self.contextualMode = [useContextual in [1, 2], useContextual in [0, 2]]
-
-        self.task = asyncio.create_task(self._loop())
-        if (self._speaker != None):
-            threading.Thread(target = self._playback, daemon = True).start()
-        if (diarization):
-            self.taskDiarization = asyncio.create_task(self._diarization())
-
-    async def _loop(self):
-        while True:
-            if (self.mic.queue.empty()):
-                await asyncio.sleep(0.01)
-                continue
-
-            while (not self.mic.queue.empty()):
-                audioSlice = self.mic.queue.get()
-                self._buffer = np.concatenate((self._buffer, resample_poly(audioSlice, 16000, self.mic.sampleRate)))
-
-            if (len(self._buffer) > 16000 * MAX_BUFFER_DURATION):
-                # with wave.open("test.wav", "wb") as wf:
-                #     wf.setnchannels(1)
-                #     wf.setsampwidth(2)
-                #     wf.setframerate(16000)
-                #     wf.writeframes((self._buffer * 32767).astype(np.int16).tobytes())
-                self._buffer = self._buffer[-MAX_BUFFER_DURATION * 16000:]
-
-            if (self.contextualMode[0]):
-                async with Transcriber.get_lock():
-                    timeTranscribeStart = time.perf_counter()
-                    self.transcribeText, self.language = await asyncio.to_thread(self._model.transcribe_to_text, self._buffer, True, self._beamSize, self._filter, self._splitParts)
-                    self.timeToTranscribe = time.perf_counter() - timeTranscribeStart
-
-            if (self.contextualMode[1]):
-                async with Transcriber.get_lock():
-                    timeTranscribeStart = time.perf_counter()
-                    self.transcribeTextNoncontextual, self.languageNoncontextual = await asyncio.to_thread(self._model.transcribe_to_text, self._buffer, False, self._beamSize, self._filter, self._splitParts)
-                    self.timeToTranscribe = time.perf_counter() - timeTranscribeStart
-
-    def _playback(self):
-        while True:
-            if (self.mic.queuePlayback.empty()):
-                time.sleep(0.1)
-                continue
-
-            # stereo only
-            audioSlice = self.mic.queuePlayback.get()
-            if (self._speaker != None):
-                if (self._speaker.sampleRate != self.mic.sampleRate):
-                    audio = resample_poly(audioSlice, self._speaker.sampleRate, self.mic.sampleRate).astype(np.float32)
-                else:
-                    audio = audioSlice.astype(np.float32).ravel()
-                # audio = np.repeat(audio[:, np.newaxis], self._speaker.channels, axis = 1).ravel()
-
-                self._speaker.play(audio, sourceChannels = self.mic.channels if not self.mic._flatten else 1)
-
-    async def _diarization(self):
-        while True:
-            # if (len(self._buffer) > 16000 * (MAX_BUFFER_DURATION / 2)):
-            audioData = self._buffer.copy()
-            try:
-                self.diarizationOutput = await asyncio.to_thread(self._diarizationTool.process, audioData, 16000)
-                await asyncio.sleep(MAX_BUFFER_DURATION / 8)
-            except Exception as error:
-                print(f"Diarization failed: {error}", file=sys.stderr)
-                await asyncio.sleep(MAX_BUFFER_DURATION / 8)
-            # else:
-            #     await asyncio.sleep(MAX_BUFFER_DURATION / 8)
-
-    def flush_buffer(self):
-        self._buffer = np.empty(0, dtype = np.float32)
-
-    def close(self):
-        self.task.cancel()
-        if self.enableDiarization:
-            self.taskDiarization.cancel()
-        self.mic.stop()
-        if self._speaker != None:
-            self._speaker.close()
-
-    @classmethod
-    def get_lock(cls) -> asyncio.Lock:
-        if cls.transcriptionLock is None:
-            cls.transcriptionLock = asyncio.Lock()
-        return cls.transcriptionLock
-
-class DiarizationTool:
-    def __init__(self):
-        from pyannote.audio import Pipeline
-        
-        torch.backends.cuda.matmul.allow_tf32 = False
-        torch.backends.cudnn.allow_tf32 = False
-        # torch.backends.cuda.matmul.fp32_precision = "ieee"
-        # torch.backends.cudnn.fp32_precision = "ieee"
-        self._pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-community-1", token="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")
-        self._pipeline.to(torch.device("cuda"))
-        self.output = None
-
-    def process(self, audioData, sampleRate: int):
-        self.output = self._pipeline({
-            "waveform": torch.from_numpy(audioData).unsqueeze(0),
-            "sample_rate": sampleRate,
-        })
-        return self.output
-
-class TTS:
-    languageVoiceDict = {"ja": "ja-JP-NanamiNeural", "en": "en-US-EmmaNeural", "id": "id-ID-GadisNeural"}
-
-    def __init__(self, voiceModel: str = "ja-JP-NanamiNeural", manual: bool = False):
-        import edge_tts
-
-        self.edgeTTS = edge_tts
-        self._voiceShortnames = []
-        self._voiceList = []
-        self.manual = manual
-        self.voiceModel = voiceModel # fallback
-
-        self._speaker = Speaker(manual = manual)
-    
-    def prompt_manual(self):
-        if (self.manual):
-            for index, voice in enumerate(self._voiceShortnames):
-                print(f"[{index}] {voice}")
-            while True:
-                voiceModel = input("Select voice model by index: ")
-                if (voiceModel == ""):
-                    voiceModel = "auto"
-                    print("Using dictionary-provided auto voice model")
-                    break
-                elif (returnTuple := helper.succeeds(int, voiceModel))[0]:
-                    if (0 <= returnTuple[1] <= len(self._voiceShortnames)):
-                        voiceModel = self._voiceShortnames[returnTuple[1]]
-                        break
-            
-        self._voiceModel = voiceModel
-
-
-    def speak(self, text, language: str = "en"):
-        voiceModel = (TTS.languageVoiceDict[language] if language in TTS.languageVoiceDict else TTS.languageVoiceDict["en"]) if self._voiceModel == "auto" else self._voiceModel
-        communicator = self.edgeTTS.Communicate(text, voiceModel)
-
-        audioData = b''
-
-        for chunk in communicator.stream_sync():
-            if chunk["type"] == "audio" and chunk["data"]:
-                audioData += chunk["data"]
-
-        audioData = np.array(AudioSegment.from_mp3(BytesIO(audioData)).get_array_of_samples())
-        audioData = audioData.astype(np.float32) / np.iinfo(np.int16).max
-        self._speaker.play(audioData, sourceSampleRate = 24000, sourceChannels = 1)
-
-    def stop_audio(self):
-        self._speaker.abortPlayback()
-
-    @classmethod
-    async def create(cls, voiceModel: str = "ja-JP-NanamiNeural", manual: bool = False):
-        instance = cls(voiceModel = voiceModel, manual = manual)
-        instance._voiceList = await instance.edgeTTS.voices.list_voices()
-        instance._voiceShortnames = [voice["ShortName"] for voice in instance._voiceList]
-        instance.prompt_manual()
-        return instance
-
-class LLM:
-    def __init__(self, model: str = "llama3.2", systemPrompt: str | None = None, enableAudio: bool = True, tts: TTS | None = None, manual: bool = False):
-        import ollama
-        self.ollama = ollama
-
-        if (manual):
-            modelsList = self.ollama.list().get("models", [])
-            for index, model in enumerate(modelsList):
-                print(f"[{index}] {model}")
-            while True:
-                model = input("Select LLM model by index: ")
-                if (model == ""):
-                    model = "llama3.2"
-                    print(f"Using default OLLAMA model: {model}")
-                    break
-                elif (returnTuple := helper.succeeds(int, model))[0]:
-                    if (0 <= returnTuple[1] < len(modelsList)):
-                        model = modelsList[returnTuple[1]].model
-                        break
-                    
-        self.model = model
-        self.tts = tts
-        self._enableAudio = enableAudio
-        self.systemPrompt = "Reply in the same language as the input text. Be a casual chatting company." if systemPrompt == None else systemPrompt
-        self._response = None
-
-    def get_response(self, message: str | None = None):
-        self._response = self.ollama.chat(model = self.model, messages = [
-            {"role": "system", "content": self.systemPrompt},
-            {"role": "user", "content": message}
-            ]) if message != None else "Empty input message"
-        return self._response
-
-    def get_text_response(self, message: str | None = None) -> str:
-        return self.get_response(message = message)['message']['content']
-
-    def audio_chat(self, message: str | None = None, language: str = "en"):
-        if (not self._enableAudio):
-            print("Audio is disabled")
-        else:
-            self.tts.speak(text = self.get_text_response(message = message), language = language)
-
-    def stop_audio(self):
-        self.tts.stop_audio()
-
-    @classmethod
-    async def create(cls, model: str = "llama3.2", systemPrompt: str | None = None, enableAudio: bool = True, manual: bool = False):
-        tts = await TTS.create(manual = manual) if enableAudio else None
-        instance = cls(model = model, systemPrompt = systemPrompt, enableAudio = enableAudio, tts = tts, manual = manual)
-        return instance
-
-
-
-async def main():
-    transcribers = []
-    try:
-        os.system("")
-
-        while True:
-            try:
-                instancesCount = int(input("Set amount of instances: "))
-                break
-            except:
-                pass
-        Transcriber.transcriptionLock = asyncio.Lock()
-        whisperObject = WhisperObject(manual = True)
-        if (whisperObject.modelSize != None):
-            print("Initiated whisper\n")
-        transcribers = [Transcriber(whisperObject = whisperObject, manual = True) for _ in range(instancesCount)]
-
-        while True:
-            useLLM = input("Enable LLM interaction (true/false): ")
-            if (useLLM == ""):
-                useLLM = True
-                print("Using default settings: True")
-                break
-            if (helper.succeeds(int, useLLM)[0]):
-                useLLM = int(useLLM) != 0
-                break
+                    cur = conn.execute("INSERT INTO Allergy (name) VALUES (?)", (alg_name,))
+                    alg_id = cur.lastrowid
+                conn.execute("INSERT OR IGNORE INTO UserAllergy (user_id, allergy_id, info_date) VALUES (?, ?, ?)",
+                             (uid, alg_id, today_date))
+
+            # 初回来店メモ
+            if u.hint:
+                conn.execute("""
+                    INSERT INTO UserMemory (user_id, timestamp, memory_topic, memory_content)
+                    VALUES (?, ?, '新規受付', ?)
+                """, (uid, now_str, u.hint))
+
+            created_user_ids.append(uid)
+        conn.commit()
+
+    return {"status": "success", "user_ids": created_user_ids}
+
+# 3. カルテ情報の更新（基本情報・好物・アレルギー・接客メモ）
+@app.put("/api/users/{user_id}")
+def update_user_profile(user_id: str, req: UserUpdateRequest):
+    with get_db() as conn:
+        # 基本情報
+        conn.execute("""
+            UPDATE UserData SET name = ?, region = ? WHERE id = ?
+        """, (req.name, req.region, user_id))
+
+        # アレルギー更新
+        conn.execute("DELETE FROM UserAllergy WHERE user_id = ?", (user_id,))
+        for alg_name in req.allergies:
+            row = conn.execute("SELECT id FROM Allergy WHERE name = ?", (alg_name,)).fetchone()
+            if row:
+                alg_id = row["id"]
             else:
-                if (useLLM.lower() not in ["true", "false"]):
-                    continue
-                useLLM = useLLM.lower() == "true"
-                break
+                cur = conn.execute("INSERT INTO Allergy (name) VALUES (?)", (alg_name,))
+                alg_id = cur.lastrowid
+            conn.execute("INSERT OR IGNORE INTO UserAllergy (user_id, allergy_id, info_date) VALUES (?, ?, date('now'))",
+                         (user_id, alg_id))
 
-        if (useLLM):
-            llm = await LLM.create(model = "qwen2.5:3b-instruct-q8_0", manual = True)
+        # 好物メニュー更新
+        conn.execute("DELETE FROM UserMenuPreference WHERE user_id = ?", (user_id,))
+        for fav_name in req.favs:
+            row = conn.execute("SELECT id FROM Menu WHERE name = ?", (fav_name,)).fetchone()
+            if row:
+                menu_id = row["id"]
+            else:
+                cur = conn.execute("INSERT INTO Menu (name, price) VALUES (?, 1000)", (fav_name,))
+                menu_id = cur.lastrowid
+            conn.execute("INSERT OR IGNORE INTO UserMenuPreference (user_id, menu_id) VALUES (?, ?)",
+                         (user_id, menu_id))
 
-        iterationCount = 0
-        silentTime = 0.0
-        startTime = time.perf_counter()
-        spoken = False
+        # メモ保存
+        if req.hint:
+            conn.execute("""
+                INSERT INTO UserMemory (user_id, timestamp, memory_topic, memory_content)
+                VALUES (?, datetime('now'), '接客カルテ更新', ?)
+            """, (user_id, req.hint))
 
-        for transcriber in transcribers:
-            transcriber.mic.ready = True
+        conn.commit()
+    return {"status": "updated"}
+
+# 4. 配席セッション作成
+@app.post("/api/sessions/assign")
+def assign_session(req: AssignRequest):
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    with get_db() as conn:
+        conn.execute("""
+            INSERT INTO TableSession (id, datetime, table_id, start_datetime, end_datetime, conversation_status)
+            VALUES (?, ?, ?, ?, '利用中', 0)
+        """, (req.session_id, now, req.table_id, now))
         
-        while True:
-            speakerCount = 0
-            newlineCount = 0
-            peakAmplitude = 0.0
-            lastPeakTranscriber = -1
-            print(f"[{iterationCount}] Last transcribe time {sum(transcriber.timeToTranscribe for transcriber in transcribers):.5f}s\033[K")
+        for uid in req.user_ids:
+            conn.execute("INSERT INTO TableSessionMembers (table_session_id, user_id) VALUES (?, ?)", (req.session_id, uid))
+            conn.execute("UPDATE UserData SET last_visit = ? WHERE id = ?", (now, uid))
+        conn.commit()
+    return {"status": "assigned"}
 
-            for i, transcriber in enumerate(transcribers):
-                print(f"Peak input signal: {transcriber.mic.peakAmplitude}\033[K")
-                if (transcriber.mic.peakAmplitude > peakAmplitude):
-                    peakAmplitude = transcriber.mic.peakAmplitude
-                    lastPeakTranscriber = i
+# 5. 会計・退店処理
+@app.post("/api/sessions/{session_id}/checkout")
+def checkout_session(session_id: str):
+    now = datetime.now().strftime("%H:%M 退店")
+    with get_db() as conn:
+        conn.execute("UPDATE TableSession SET end_datetime = ? WHERE id = ?", (now, session_id))
+        conn.commit()
+    return {"status": "checked_out"}
 
-                if (transcriber.contextualMode[0]):
-                    language = transcriber.language
-                    text = transcriber.transcribeText
-                    if (text.count("<>") > 0):
-                        text = text.split("<>")
-                        print(f"\rInstance {i}: \t[{language}] {text[0]}\033[K")
-                        for textPart in text:
-                            print(f"{textPart}\033[K")
-                            newlineCount += 1
-                    else:
-                        print(f"\rInstance {i}: \t[{language}] {text[-50:]:<50}\033[K")
+# ── 静的ファイル配信 ──
+@app.get("/")
+def serve_index():
+    return FileResponse("index.html")
 
-                if (transcriber.contextualMode[1]):
-                    language = transcriber.languageNoncontextual
-                    text = transcriber.transcribeTextNoncontextual
-                    if (text.count("<>") > 0):
-                        text = text.split("<>")
-                        print(f"\rInstance {i}: \t[{language}] {text[0]}\033[K")
-                        for textPart in text:
-                            print(f"{textPart}\033[K")
-                            newlineCount += 1
-                    else:
-                        print(f"\rInstance {i}: \t[{language}] {text[-50:]:<50}\033[K")
-                        
-                if (transcriber.enableDiarization):
-                    try:
-                        for turn, speaker in transcriber.diarizationOutput.speaker_diarization:
-                            print(f"Start = {turn.start:.1f}s, Stop = {turn.end:.1f}s, {speaker}\033[K")
-                            speakerCount += 1
-                    except Exception as exception:
-                        print(f"Diarization failed: {exception}")
-                        speakerCount += 1
-                        continue
-
-            if (spoken):
-                silentTime += time.perf_counter() - startTime
-            startTime = time.perf_counter()
-
-            print(f"Transcriber {lastPeakTranscriber} monitored for LLM input, time since last silence: {silentTime}\033[K")
-            print("=============================================================================================================================\x1b[J")
-
-            print(f"\033[{((transcriber.contextualMode.count(True) + 1) * len(transcribers)) + 3 + speakerCount + newlineCount}A\r", end = "")
-            iterationCount += 1
-
-            if (peakAmplitude > SILENCE_THRESHOLD):
-                silentTime = 0
-                spoken = True
-
-            if ((silentTime > LLM_TRIGGER_SILENCE_DURATION) and spoken and useLLM):
-                # llm.stopAudio()
-                message = transcribers[lastPeakTranscriber].transcribeText
-                if (message != ""):
-                    llm.audio_chat(message = message, language = transcribers[lastPeakTranscriber].language)
-                for transcriber in transcribers:
-                    transcriber.flush_buffer()
-                silentTime = 0
-                spoken = False
-                
-            await asyncio.sleep(0.1)
-
-    except KeyboardInterrupt:
-        print("\n\n\nExiting")
-    finally:
-        for transcriber in transcribers:
-            transcriber.close()
-        print("\033[K\n\033[K\n\033[K\n")
+app.mount("/", StaticFiles(directory="."), name="static")
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    import uvicorn
+    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
