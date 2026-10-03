@@ -1,20 +1,20 @@
 import numpy as np
-import pyaudiowpatch as pyaudio
 import threading
 import queue
 import time
-import wave
 import sys
 import os
-import helper
+import kitanet_helper
 import asyncio
 import torch
+import json
+
 # import websocket
 from faster_whisper import WhisperModel
 from scipy.signal import resample_poly
-from pyrnnoise_customfork import RNNoise
 from io import BytesIO
 from pydub import AudioSegment
+from kitanet_audio import Mic, Speaker
 
 # model     : 軽 → 重: "tiny" (75MB), "base" (142MB), "small" (466MB), "medium" (1.5GB), "large-v3" (3.0GB)
 # device    : "cpu", Nvidia GPU: "cuda"
@@ -22,246 +22,6 @@ from pydub import AudioSegment
 MAX_BUFFER_DURATION = 20
 SILENCE_THRESHOLD = 0.035
 LLM_TRIGGER_SILENCE_DURATION = 2.0
-
-class Mic:
-    stemIndexDict = ["drums", "bass", "other", "vocals"]
-
-    def __init__(self, sampleRate: int | None = None, deviceIndex: int | None = None, chunkDuration: int | float = 0.5, flatten: bool = True, denoise: bool = True, manual: bool = False):
-        self._pa = pyaudio.PyAudio()
-        self.queue = queue.Queue()
-        self.queuePlayback = queue.Queue()
-        self._running = False
-        self.peakAmplitude = -1
-        self._devices = {
-            index: self._pa.get_device_info_by_index(index) for index in range(self._pa.get_device_count())
-            if self._pa.get_device_info_by_index(index)["maxInputChannels"] > 0
-        }
-        if (manual):
-            self.start_manual()
-        else:
-            self.start(sampleRate = sampleRate, deviceIndex = deviceIndex, chunkDuration = chunkDuration, flatten = flatten, denoise = denoise)
-        self.ready = False
-
-    def start(self, sampleRate: int | None = None, deviceIndex: int | None = None, chunkDuration: int | float = 0.5, flatten: bool = True, denoise: bool = True, stem: bool = False):
-        self.deviceIndex = int(self._pa.get_default_input_device_info()["index"]) if deviceIndex == None else deviceIndex
-        self.sampleRate = int(self._pa.get_device_info_by_index(self.deviceIndex)["defaultSampleRate"]) if sampleRate == None else sampleRate
-        self.channels = self._pa.get_device_info_by_index(self.deviceIndex)["maxInputChannels"]
-        self.chunkDuration = chunkDuration
-        self.chunkLength = int(self.chunkDuration * self.sampleRate)
-        self._flatten = flatten
-        self._running = True
-        self._stream = self._pa.open(
-            format = pyaudio.paFloat32, rate = self.sampleRate, channels = self.channels, input_device_index = self.deviceIndex, input = True, frames_per_buffer = self.chunkLength
-        )
-
-        if (denoise and not stem):
-            self._denoise = True
-            self._denoiser = RNNoise(self.sampleRate)
-        else:
-            self._denoise = False
-
-        if (stem):
-            import demucs.api
-
-            self._stem = True
-            self._separator = demucs.api.Separator(model = "htdemucs", shifts = 1, device = "cuda" if torch.cuda.is_available() else "cpu")
-            self.stemIndex = input("Set stem index of [drums, bass, other, vocals] in format of 0/1 (e.g. 1110): ")
-        else:
-            self._stem = False
-
-        threading.Thread(target = self._loop, daemon = True).start()
-
-    def start_manual(self):
-        for index, device in self._devices.items():
-            print(f"[{index}] {device['name']}")
-
-        while True:
-            try:
-                deviceIndex = int(input("\nSelect input device index: "))
-                if deviceIndex not in self._devices:
-                    continue
-                sampleRate = input(f"Sample rate (enter to use device's default value {self._pa.get_device_info_by_index(deviceIndex)["defaultSampleRate"]}): ")
-                sampleRate = None if sampleRate == "" else int(sampleRate)
-                chunkDuration = input("Chunk duration (enter to use default value 1.0[s]): ")
-                chunkDuration = 1.0 if chunkDuration == "" else float(chunkDuration)
-                while True:
-                    flatten = input("Flatten channels (true/false): ")
-                    if (flatten == ""):
-                        flatten = True
-                        print("Using default settings: True")
-                        break
-                    if (helper.succeeds(int, flatten)[0]):
-                        flatten = int(flatten) != 0
-                        break
-                    else:
-                        if (flatten.lower() not in ["true", "false"]):
-                            continue
-                        flatten = flatten.lower() == "true"
-                        break
-                while True:
-                    denoise = input("Denoise audio (true/false): ")
-                    if (denoise == ""):
-                        denoise = False
-                        print("Using default settings: False")
-                        break
-                    if (helper.succeeds(int, denoise)[0]):
-                        denoise = int(denoise) != 0
-                        break
-                    else:
-                        if (denoise.lower() not in ["true", "false"]):
-                            continue
-                        denoise = denoise.lower() == "true"
-                        break
-                while True:
-                    stem = input("Stem audio (true/false): ")
-                    if (stem == ""):
-                        stem = False
-                        print("Using default settings: False")
-                        break
-                    if (helper.succeeds(int, stem)[0]):
-                        stem = int(stem) != 0
-                        break
-                    else:
-                        if (stem.lower() not in ["true", "false"]):
-                            continue
-                        stem = stem.lower() == "true"
-                        break
-                break
-            except ValueError:
-                pass
-
-        self.start(sampleRate = sampleRate, deviceIndex = deviceIndex, chunkDuration = chunkDuration, flatten = flatten, denoise = denoise, stem = stem)
-
-    def _loop(self):
-        print(f"Mic {self.deviceIndex}: started loop with {self.sampleRate} hz sampling rate and {self.chunkLength} samples length chunk")
-
-        bufferPaddingLength = min(0.6, self.chunkDuration / 2)
-        bufferPaddingLength = int(bufferPaddingLength * self.sampleRate)
-        bufferPadding = np.zeros(bufferPaddingLength * self.channels).astype(np.float32)
-
-        while (self._running):
-            if (not self.ready):
-                time.sleep(0.1)
-                continue
-            rawBuffer = self._stream.read(self.chunkLength, exception_on_overflow = False)
-            buffer = np.frombuffer(rawBuffer, dtype = np.float32)
-            if (self._denoise and not self._stem):
-                audio = buffer.reshape(-1, self.channels).mean(axis = 1)
-                # audio = resample_poly(audio, 48000, self.sampleRate)
-                denoisedBuffer = [
-                    denoised for _, denoised in self._denoiser.denoise_chunk(audio)
-                ]
-                if not denoisedBuffer:
-                    continue
-                audio = np.concatenate(denoisedBuffer, axis = 1)
-                audio = audio.astype(np.float32) / np.iinfo(np.int16).max
-                # audio = resample_poly(audio, self.sampleRate, 48000)
-                buffer = audio.mean(axis = 0) if self._flatten else audio.T.ravel()
-            elif self._flatten:
-                buffer = buffer.reshape(-1, self.channels).mean(axis = 1)
-
-            while True:
-                if (self._stem):
-                    buffer = np.concatenate([bufferPadding, buffer])
-                    bufferPadding = buffer[-bufferPaddingLength * self.channels:]
-                    if (self.channels == 2 and not self._flatten):
-                        buffer = buffer.reshape(-1, 2).T
-                    elif (self.channels == 1 or self._flatten):
-                        buffer = np.repeat(buffer[np.newaxis, :], 2, axis = 0)
-                    else:
-                        break
-
-                    bufferTensor = torch.from_numpy(buffer.copy())
-                    origin, stems = self._separator.separate_tensor(bufferTensor, self.sampleRate)
-                    bufferEmpty = True
-                    for index, (stemName, stemTensor) in enumerate(stems.items()):
-                        # print(f"{index}, {stemName}")
-                        if (self.stemIndex[self.stemIndexDict.index(stemName)] != "0"):
-                            buffer = stemTensor.squeeze(0).cpu().numpy().T if bufferEmpty else buffer + stemTensor.squeeze(0).cpu().numpy().T
-                            bufferEmpty = False
-                    if (self.channels == 1 or self._flatten):
-                        buffer = buffer[:, 0]
-                    buffer = resample_poly(buffer, self.sampleRate, 44100).ravel()
-                    buffer = buffer[bufferPaddingLength : -bufferPaddingLength]
-                    break
-                else:
-                    break
-
-            self.queue.put(buffer.astype(np.float32))
-            self.queuePlayback.put(buffer.astype(np.float32))
-
-            self.peakAmplitude = np.max(np.abs(buffer))
-            
-    def stop(self):
-        self._running = False
-        self._stream.stop_stream()
-        self._stream.close()
-        self._pa.terminate()
-        print(f"Mic {self.deviceIndex}: successfully stopped")
-
-class Speaker:
-    def __init__(self, sampleRate: int | None = None, deviceIndex: int | None = None, manual: bool = False):
-        self._pa = pyaudio.PyAudio()
-        self._devices = {
-            index: self._pa.get_device_info_by_index(index) for index in range(self._pa.get_device_count())
-            if self._pa.get_device_info_by_index(index)["maxOutputChannels"] > 0
-        }
-        if (manual):
-            self._stream = self.open_manual()
-        else:
-            self._stream = self._open(sampleRate = sampleRate, deviceIndex = deviceIndex)
-
-    def _open(self, sampleRate: int | None = None, deviceIndex: int | None = None) -> pyaudio.Stream:
-        self.deviceIndex = int(self._pa.get_default_output_device_info()["index"]) if deviceIndex == None else deviceIndex
-        self.sampleRate = int(self._pa.get_device_info_by_index(self.deviceIndex)["defaultSampleRate"]) if sampleRate == None else sampleRate
-        self.channels = self._pa.get_device_info_by_index(self.deviceIndex)["maxOutputChannels"]
-        return self._pa.open(
-            format = pyaudio.paFloat32, rate = self.sampleRate, channels = self.channels, output = True, output_device_index = self.deviceIndex
-        )
-
-    def open_manual(self):
-        for index, device in self._devices.items():
-            print(f"[{index}] {device['name']}")
-
-        while True:
-            try:
-                deviceIndex = int(input("\nSelect output device index: "))
-                if deviceIndex not in self._devices:
-                    continue
-                sampleRate = input(f"Sample rate (enter to use device's default value {self._pa.get_device_info_by_index(deviceIndex)["defaultSampleRate"]}): ")
-                sampleRate = int(self._pa.get_device_info_by_index(deviceIndex)["defaultSampleRate"]) if sampleRate == "" else int(sampleRate)
-                break
-            except ValueError:
-                pass
-
-        return self._open(sampleRate = sampleRate, deviceIndex = deviceIndex)
-
-    def play(self, audioSample, sourceSampleRate: int | None = None, sourceChannels: int | None = None):
-        if (sourceSampleRate != None):
-            audioSample = resample_poly(audioSample, self.sampleRate, sourceSampleRate)
-        if (sourceChannels != None):
-            if (sourceChannels != self.channels):
-                audioSample = audioSample.reshape(-1, sourceChannels).mean(axis = 1)
-                audioSample = np.repeat(audioSample[:, np.newaxis], self.channels, axis = 1).ravel()
-        self._stream.write(audioSample.tobytes())
-
-    def restart(self):
-        try:
-            self._stream.stop_stream()
-            self._stream.close()
-        except Exception:
-            pass
-
-        self._stream = self._open()
-
-    def abortPlayback(self):
-        # find ways to safely restart stream
-        pass
-
-    def close(self):
-        self._stream.stop_stream()
-        self._stream.close()
-        self._pa.terminate()
 
 class WhisperObject:
     models = ["tiny", "base", "small", "medium", "large-v3"]
@@ -282,7 +42,7 @@ class WhisperObject:
                     self.modelSize = "small"
                     print(f"Using default model: {self.modelSize}")
                     break
-                elif (modelSizeIndex := helper.succeeds(int, self.modelSize))[0]:
+                elif (modelSizeIndex := kitanet_helper.succeeds(int, self.modelSize))[0]:
                     if (-1 <= modelSizeIndex[1] < len(WhisperObject.models)):
                         self.modelSize = WhisperObject.models[modelSizeIndex[1]] if modelSizeIndex[1] != -1 else None
                         break
@@ -294,7 +54,7 @@ class WhisperObject:
                     self._device = "cuda"
                     print(f"Using default device: {self._device}")
                     break
-                elif (deviceIndex := helper.succeeds(int, self._device))[0]:
+                elif (deviceIndex := kitanet_helper.succeeds(int, self._device))[0]:
                     if (0 <= deviceIndex[1] <= 1):
                         self._device = ["cpu", "cuda"][deviceIndex[1]]
                         break 
@@ -307,7 +67,7 @@ class WhisperObject:
                     self._computeType = "int8" if self._device == "cpu" else "float16"
                     print(f"Using default compute type for device {self._device}: {self._computeType}")
                     break
-                elif (computeTypeIndex := helper.succeeds(int, self._computeType))[0]:
+                elif (computeTypeIndex := kitanet_helper.succeeds(int, self._computeType))[0]:
                     if (0 <= computeTypeIndex[1] < len(computeTypeAvailable)):
                         self._computeType = computeTypeAvailable[computeTypeIndex[1]]
                         break
@@ -351,7 +111,6 @@ class WhisperObject:
         else:
             return "", ""
 
-
 class Transcriber:
     transcriberID = 0
     transcriptionLock: asyncio.Lock | None = None
@@ -362,7 +121,6 @@ class Transcriber:
         self.name = name if name != None else f"Transcriber{Transcriber.transcriberID}"
         self.id = Transcriber.transcriberID
         Transcriber.transcriberID += 1
-        self.mic = Mic(manual = manual) # OPEN FOR DEBUG, CHANGE TO PROTECTED LATER
 
         if (manual):
             while True:
@@ -371,7 +129,7 @@ class Transcriber:
                     speaker = False
                     print("Using default settings: False")
                     break
-                elif (returnTuple := helper.succeeds(int, speaker))[0]:
+                elif (returnTuple := kitanet_helper.succeeds(int, speaker))[0]:
                     speaker = returnTuple[1]
                     break
                 else:
@@ -380,7 +138,7 @@ class Transcriber:
                     speaker = speaker.lower() == "true"
                     break
             while True:
-                null, beamSize = helper.succeeds(int, input("Beam size (1~20): "))
+                null, beamSize = kitanet_helper.succeeds(int, input("Beam size (1~20): "))
                 if (0 < beamSize < 21):
                     break
             while True:
@@ -389,7 +147,7 @@ class Transcriber:
                     filter = True
                     print("Using default settings: True")
                     break
-                elif (returnTuple := helper.succeeds(int, filter))[0]:
+                elif (returnTuple := kitanet_helper.succeeds(int, filter))[0]:
                     filter = returnTuple[1]
                     break
                 else:
@@ -403,7 +161,7 @@ class Transcriber:
                     useContextual = 1
                     print("Using default settings: True")
                     break
-                elif (returnTuple := helper.succeeds(int, useContextual))[0]:
+                elif (returnTuple := kitanet_helper.succeeds(int, useContextual))[0]:
                     if (0 <= returnTuple[1] <= 2):
                         useContextual = returnTuple[1]
                         break
@@ -417,7 +175,7 @@ class Transcriber:
                     diarization = False
                     print("Using default settings: False")
                     break
-                elif (returnTuple := helper.succeeds(int, diarization))[0]:
+                elif (returnTuple := kitanet_helper.succeeds(int, diarization))[0]:
                     if (0 <= returnTuple[1] <= 1):
                         diarization = returnTuple[1] == 1
                         break
@@ -431,7 +189,7 @@ class Transcriber:
                     splitParts = False
                     print("Using default settings: False")
                     break
-                elif (returnTuple := helper.succeeds(int, splitParts))[0]:
+                elif (returnTuple := kitanet_helper.succeeds(int, splitParts))[0]:
                     if (0 <= returnTuple[1] <= 1):
                         splitParts = returnTuple[1] == 1
                         break
@@ -440,6 +198,7 @@ class Transcriber:
                         splitParts = splitParts.lower() == "true"
                         break
 
+        self.mic = Mic(manual = manual) # OPEN FOR DEBUG, CHANGE TO PROTECTED LATER
         self._speaker = Speaker(manual = manual) if speaker else None
         self._model = whisperObject
         self._diarizationTool = DiarizationTool() if diarization else None
@@ -454,6 +213,7 @@ class Transcriber:
         self._filter = filter
         self.timeToTranscribe = 0.0
         self._buffer = np.empty(0, dtype = np.float32)
+        self._queuePlayback = queue.Queue()
         self.contextualMode = [useContextual in [1, 2], useContextual in [0, 2]]
 
         self.task = asyncio.create_task(self._loop())
@@ -470,6 +230,7 @@ class Transcriber:
 
             while (not self.mic.queue.empty()):
                 audioSlice = self.mic.queue.get()
+                self._queuePlayback.put(audioSlice)
                 self._buffer = np.concatenate((self._buffer, resample_poly(audioSlice, 16000, self.mic.sampleRate)))
 
             if (len(self._buffer) > 16000 * MAX_BUFFER_DURATION):
@@ -494,12 +255,12 @@ class Transcriber:
 
     def _playback(self):
         while True:
-            if (self.mic.queuePlayback.empty()):
+            if (self._queuePlayback.empty()):
                 time.sleep(0.1)
                 continue
 
             # stereo only
-            audioSlice = self.mic.queuePlayback.get()
+            audioSlice = self._queuePlayback.get()
             if (self._speaker != None):
                 if (self._speaker.sampleRate != self.mic.sampleRate):
                     audio = resample_poly(audioSlice, self._speaker.sampleRate, self.mic.sampleRate).astype(np.float32)
@@ -582,13 +343,12 @@ class TTS:
                     voiceModel = "auto"
                     print("Using dictionary-provided auto voice model")
                     break
-                elif (returnTuple := helper.succeeds(int, voiceModel))[0]:
+                elif (returnTuple := kitanet_helper.succeeds(int, voiceModel))[0]:
                     if (0 <= returnTuple[1] <= len(self._voiceShortnames)):
                         voiceModel = self._voiceShortnames[returnTuple[1]]
                         break
             
         self._voiceModel = voiceModel
-
 
     def speak(self, text, language: str = "en"):
         voiceModel = (TTS.languageVoiceDict[language] if language in TTS.languageVoiceDict else TTS.languageVoiceDict["en"]) if self._voiceModel == "auto" else self._voiceModel
@@ -630,7 +390,7 @@ class LLM:
                     model = "llama3.2"
                     print(f"Using default OLLAMA model: {model}")
                     break
-                elif (returnTuple := helper.succeeds(int, model))[0]:
+                elif (returnTuple := kitanet_helper.succeeds(int, model))[0]:
                     if (0 <= returnTuple[1] < len(modelsList)):
                         model = modelsList[returnTuple[1]].model
                         break
@@ -673,12 +433,9 @@ async def main():
     try:
         os.system("")
 
-        while True:
-            try:
-                instancesCount = int(input("Set amount of instances: "))
-                break
-            except:
-                pass
+        instancesCount = await asyncio.to_thread(input, "Set amount of instances: ")
+        instancesCount = int(instancesCount)
+        
         Transcriber.transcriptionLock = asyncio.Lock()
         whisperObject = WhisperObject(manual = True)
         if (whisperObject.modelSize != None):
@@ -691,7 +448,7 @@ async def main():
                 useLLM = True
                 print("Using default settings: True")
                 break
-            if (helper.succeeds(int, useLLM)[0]):
+            if (kitanet_helper.succeeds(int, useLLM)[0]):
                 useLLM = int(useLLM) != 0
                 break
             else:
