@@ -9,7 +9,6 @@ lingua==4.16.2
 numpy==2.5.3
 ollama==0.6.3
 PyAudio==0.2.14
-PyAudioWPatch==0.2.12.7
 pydub==0.25.1
 pygame==2.6.1
 pyrnnoise==0.4.3
