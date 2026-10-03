@@ -153,7 +153,7 @@ async def main():
         while True:
             message = await asyncio.to_thread(input, "> ")
             rtc.send_data("text", message)
-            
+
     else:
         offer = await asyncio.to_thread(input, "Offer dict: ")
         offerDict: dict[str, str] = json.loads(offer)
@@ -166,7 +166,7 @@ async def main():
         answerDict = rtc.get_local_dict()
         print(f"Answer dict: {json.dumps(answerDict)}")
 
-        while (rtc.get_state("connectionstate" != "complete")):
+        while (rtc.get_state("connectionstate") != "complete"):
             await asyncio.sleep(0.1)
         while True:
             message = await asyncio.to_thread(input, "> ")
