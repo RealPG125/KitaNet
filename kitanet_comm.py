@@ -54,7 +54,9 @@ class RTCInstance:
                 if (self.enableDebug): print(f"CommsPort instance {self.instanceID} autoconfig: Answer received")
                 await self.set_remote_dict(json.loads(message[6:]))
     
-    async def init_auto_config(self, offer: bool = True, channels: list[str] = ["text"]):
+    async def init_auto_config(self, offer: bool = True, channels = None, stackData: bool = False):
+        if (channels == None):
+            channels = ["text"]
         if (offer):
             ip = get_ip()
             ipList: list[str] = []
@@ -86,7 +88,7 @@ class RTCInstance:
                         print("Value is outside of port range (0~65535)")
 
             for channel in channels:
-                self.create_channel(channel)
+                self.create_channel(channelName = channel, stackToQueue = stackData)
 
             await self.create_offer()
             while (self.get_state("icegatheringstate") != "complete"):
@@ -214,7 +216,7 @@ class RTCInstance:
         channel.on("message", lambda message: self.on_message(channel = channel, message = message))
         channel.on("close", lambda: self.on_channel_close(channel = channel))
 
-        if (self.enableDebug): print(f"CommsPort instance {self.instanceID}: Automatically registered channel {channel.label}")
+        if (self.enableDebug): print(f"CommsPort instance {self.instanceID}: Registered channel {channel.label}")
 
     def on_datachannel(self, channel: RTCDataChannel):
         self._register_channel(channel)
@@ -284,7 +286,7 @@ async def main():
     #     message = await asyncio.to_thread(input, "> ")
     #     rtc.send_data("text", message)
 
-    await rtc.init_auto_config(offer = offer)
+    await rtc.init_auto_config(offer = offer, channels = ["audio"])
     while True:
         message = await asyncio.to_thread(input, "> ")
         rtc.send_data("text", message)

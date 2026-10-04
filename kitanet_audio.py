@@ -31,9 +31,9 @@ class Mic:
             index: self._pa.get_device_info_by_index(index) for index in range(self._pa.get_device_count())
             if self._pa.get_device_info_by_index(index)["maxInputChannels"] > 0
         } if not useRTC else None
-        if (manual):
+        if (manual and not useRTC):
             self.start_manual_on_device()
-        else:
+        elif (not useRTC):
             self.start_on_device(sampleRate = sampleRate, deviceIndex = deviceIndex, chunkDuration = chunkDuration, flatten = flatten, denoise = denoise)
         self.ready = False
 
@@ -43,7 +43,7 @@ class Mic:
         self.channels = channels if self._pa == None else int(self._pa.get_device_info_by_index(self.deviceIndex)["maxInputChannels"])
         self.chunkDuration = chunkDuration
         self.chunkLength = int(self.chunkDuration * self.sampleRate)
-        self._flatten = flatten
+        self.flatten = flatten
         self._running = True
         self._stream = None if self._pa == None else self._pa.open(
             format = pyaudio.paFloat32, rate = self.sampleRate, channels = self.channels, input_device_index = self.deviceIndex, input = True, frames_per_buffer = self.chunkLength
@@ -68,25 +68,20 @@ class Mic:
 
     async def start_RTC(self, sampleRate: int = 48000, channels: int = 1, manual: bool = True):
         # experimental, manual handshake only
-        self._RTCInstance = RTCInstance(stackData = True)
-        self._RTCInstance.create_channel("audio")
+        self._RTCInstance = RTCInstance()
+        await self._RTCInstance.init_auto_config(offer = True, channels = ["audio"], stackData = True)
 
         self.sampleRate = sampleRate
         self.channels = channels
+        self.flatten = channels == 1
         if (manual):
             self.sampleRate = input(f"Sample rate (enter to use default value 48000): ")
             self.sampleRate = 48000 if self.sampleRate == "" else int(self.sampleRate)
             self.channels = input(f"Set input channels (enter to use default 1): ")
             self.channels = 1 if self.channels == "" else int(self.channels)
 
-        await self._RTCInstance.create_offer()
-        await asyncio.sleep(1)
-        offerDict = self._RTCInstance.get_offer_dict()
-        print(f"Offer dict: {json.dumps(offerDict)}")
-
-        answer = input("Answer dict: ")
-        answerDict: dict[str, str] = json.loads(answer)
-        await self._RTCInstance.set_answer_dict(answerDict)
+        self._running = True
+        threading.Thread(target = self._loop, daemon = True).start()
 
     def start_manual_on_device(self):
         for index, device in self._devices.items():
@@ -150,11 +145,12 @@ class Mic:
         self.start_on_device(sampleRate = sampleRate, deviceIndex = deviceIndex, chunkDuration = chunkDuration, flatten = flatten, denoise = denoise, stem = stem)
 
     def _loop(self):
-        print(f"RTC device {self._RTCInstance.instanceID}: started loop with {self.sampleRate} hz sampling rate and {self.chunkLength} samples length chunk" if self._pa == None else f"Mic {self.deviceIndex}: started loop with {self.sampleRate} hz sampling rate and {self.chunkLength} samples length chunk")
+        print(f"RTC device {self._RTCInstance.instanceID}: started loop" if self._pa == None else f"Mic {self.deviceIndex}: started loop with {self.sampleRate} hz sampling rate and {self.chunkLength} samples length chunk")
 
-        bufferPaddingLength = min(0.6, self.chunkDuration / 2)
-        bufferPaddingLength = int(bufferPaddingLength * self.sampleRate)
-        bufferPadding = np.zeros(bufferPaddingLength * self.channels).astype(np.float32)
+        if (self._pa != None):
+            bufferPaddingLength = min(0.6, self.chunkDuration / 2)
+            bufferPaddingLength = int(bufferPaddingLength * self.sampleRate)
+            bufferPadding = np.zeros(bufferPaddingLength * self.channels).astype(np.float32)
 
         while (self._running):
             if (not self.ready):
@@ -165,7 +161,7 @@ class Mic:
                 rawBuffer = self._stream.read(self.chunkLength, exception_on_overflow = False)
                 buffer = np.frombuffer(rawBuffer, dtype = np.float32)
             elif (self._RTCInstance != None):
-                buffer = self._RTCInstance.queues["audio"].get()
+                buffer = np.frombuffer(self._RTCInstance.queues["audio"].get(), dtype = np.float32)
 
             if (self._pa != None):
                 if (self._denoise and not self._stem):
@@ -179,17 +175,17 @@ class Mic:
                     audio = np.concatenate(denoisedBuffer, axis = 1)
                     audio = audio.astype(np.float32) / np.iinfo(np.int16).max
                     # audio = resample_poly(audio, self.sampleRate, 48000)
-                    buffer = audio.mean(axis = 0) if self._flatten else audio.T.ravel()
-                elif self._flatten:
+                    buffer = audio.mean(axis = 0) if self.flatten else audio.T.ravel()
+                elif self.flatten:
                     buffer = buffer.reshape(-1, self.channels).mean(axis = 1)
 
                 while True:
                     if (self._stem):
                         buffer = np.concatenate([bufferPadding, buffer])
                         bufferPadding = buffer[-bufferPaddingLength * self.channels:]
-                        if (self.channels == 2 and not self._flatten):
+                        if (self.channels == 2 and not self.flatten):
                             buffer = buffer.reshape(-1, 2).T
-                        elif (self.channels == 1 or self._flatten):
+                        elif (self.channels == 1 or self.flatten):
                             buffer = np.repeat(buffer[np.newaxis, :], 2, axis = 0)
                         else:
                             break
@@ -202,7 +198,7 @@ class Mic:
                             if (self.stemIndex[self.stemIndexDict.index(stemName)] != "0"):
                                 buffer = stemTensor.squeeze(0).cpu().numpy().T if bufferEmpty else buffer + stemTensor.squeeze(0).cpu().numpy().T
                                 bufferEmpty = False
-                        if (self.channels == 1 or self._flatten):
+                        if (self.channels == 1 or self.flatten):
                             buffer = buffer[:, 0]
                         buffer = resample_poly(buffer, self.sampleRate, 44100).ravel()
                         buffer = buffer[bufferPaddingLength : -bufferPaddingLength]
