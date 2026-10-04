@@ -138,6 +138,20 @@ class Transcriber:
                     speaker = speaker.lower() == "true"
                     break
             while True:
+                useRTCMic = input("Use RTC mic (true/false): ")
+                if (useRTCMic == ""):
+                    useRTCMic = False
+                    print("Using default settings: False")
+                    break
+                elif (returnTuple := kitanet_helper.succeeds(int, useRTCMic))[0]:
+                    useRTCMic = returnTuple[1]
+                    break
+                else:
+                    if (useRTCMic.lower() not in ["true", "false"]):
+                        continue
+                    useRTCMic = useRTCMic.lower() == "true"
+                    break
+            while True:
                 null, beamSize = kitanet_helper.succeeds(int, input("Beam size (1~20): "))
                 if (0 < beamSize < 21):
                     break
@@ -199,19 +213,20 @@ class Transcriber:
                         break
 
         self.mic = Mic(manual = manual, useRTC = useRTCMic) # OPEN FOR DEBUG, CHANGE TO PROTECTED LATER
+        self.useRTC: bool = useRTCMic
         self._speaker = Speaker(manual = manual) if speaker else None
-        self._model = whisperObject
+        self._model: WhisperObject = whisperObject
         self._diarizationTool = DiarizationTool() if diarization else None
-        self.enableDiarization = diarization
+        self.enableDiarization: bool = diarization
         self.diarizationOutput = None
-        self._splitParts = splitParts
-        self.transcribeText = ""
-        self.transcribeTextNoncontextual = ""
-        self.language = ""
-        self.languageNoncontextual = ""
-        self._beamSize = beamSize
-        self._filter = filter
-        self.timeToTranscribe = 0.0
+        self._splitParts: bool = splitParts
+        self.transcribeText: str = ""
+        self.transcribeTextNoncontextual: str = ""
+        self.language: str = ""
+        self.languageNoncontextual: str = ""
+        self._beamSize: int = beamSize
+        self._filter: bool = filter
+        self.timeToTranscribe: float = 0.0
         self._buffer = np.empty(0, dtype = np.float32)
         self._queuePlayback = queue.Queue()
         self.contextualMode = [useContextual in [1, 2], useContextual in [0, 2]]
@@ -445,9 +460,9 @@ async def main():
             print("Initiated whisper\n")
 
         # using rtc
-        transcribers = [Transcriber(whisperObject = whisperObject, manual = True, useRTCMic = True) for _ in range(instancesCount)]
+        transcribers = [Transcriber(whisperObject = whisperObject, manual = True) for _ in range(instancesCount)]
         for transcriber in transcribers:
-            await transcriber.init_RTC()
+            if (transcriber.useRTC): await transcriber.init_RTC()
 
         while True:
             useLLM = input("Enable LLM interaction (true/false): ")
