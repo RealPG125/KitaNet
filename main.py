@@ -115,7 +115,7 @@ class Transcriber:
     transcriberID = 0
     transcriptionLock: asyncio.Lock | None = None
 
-    def __init__(self, name: str | None = None, whisperObject: WhisperObject | None = None, speaker: bool = False, beamSize: int = 1, filter: bool = True, useContextual: str | int = 1, splitParts: bool = False, manual: bool = True, diarization: bool = False):
+    def __init__(self, name: str | None = None, whisperObject: WhisperObject | None = None, speaker: bool = False, beamSize: int = 1, filter: bool = True, useContextual: str | int = 1, splitParts: bool = False, manual: bool = True, diarization: bool = False, useRTCMic: bool = False):
         if (whisperObject == None):
             raise ValueError("Error: whisperObject cannot be empty")
         self.name = name if name != None else f"Transcriber{Transcriber.transcriberID}"
@@ -198,7 +198,7 @@ class Transcriber:
                         splitParts = splitParts.lower() == "true"
                         break
 
-        self.mic = Mic(manual = manual) # OPEN FOR DEBUG, CHANGE TO PROTECTED LATER
+        self.mic = Mic(manual = manual, useRTC = useRTCMic) # OPEN FOR DEBUG, CHANGE TO PROTECTED LATER
         self._speaker = Speaker(manual = manual) if speaker else None
         self._model = whisperObject
         self._diarizationTool = DiarizationTool() if diarization else None
@@ -221,6 +221,9 @@ class Transcriber:
             threading.Thread(target = self._playback, daemon = True).start()
         if (diarization):
             self.taskDiarization = asyncio.create_task(self._diarization())
+
+    async def init_RTC(self):
+        await self.mic.start_RTC()
 
     async def _loop(self):
         while True:
@@ -268,7 +271,7 @@ class Transcriber:
                     audio = audioSlice.astype(np.float32).ravel()
                 # audio = np.repeat(audio[:, np.newaxis], self._speaker.channels, axis = 1).ravel()
 
-                self._speaker.play(audio, sourceChannels = self.mic.channels if not self.mic._flatten else 1)
+                self._speaker.play(audio, sourceChannels = self.mic.channels if not self.mic.flatten else 1)
 
     async def _diarization(self):
         while True:
@@ -440,7 +443,11 @@ async def main():
         whisperObject = WhisperObject(manual = True)
         if (whisperObject.modelSize != None):
             print("Initiated whisper\n")
-        transcribers = [Transcriber(whisperObject = whisperObject, manual = True) for _ in range(instancesCount)]
+
+        # using rtc
+        transcribers = [Transcriber(whisperObject = whisperObject, manual = True, useRTCMic = True) for _ in range(instancesCount)]
+        for transcriber in transcribers:
+            await transcriber.init_RTC()
 
         while True:
             useLLM = input("Enable LLM interaction (true/false): ")
