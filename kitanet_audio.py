@@ -37,10 +37,10 @@ class Mic:
             self.start_on_device(sampleRate = sampleRate, deviceIndex = deviceIndex, chunkDuration = chunkDuration, flatten = flatten, denoise = denoise)
         self.ready = False
 
-    def start_on_device(self, sampleRate: int | None = None, deviceIndex: int | None = None, chunkDuration: int | float = 0.5, flatten: bool = True, denoise: bool = True, stem: bool = False, channels: int = 1):
+    def start_on_device(self, sampleRate: int | None = None, deviceIndex: int | None = None, chunkDuration: int | float = 0.5, flatten: bool = True, denoise: bool = True, stem: bool = False, channels: int = 2):
         self.deviceIndex = None if self._pa == None else int(self._pa.get_default_input_device_info()["index"]) if deviceIndex == None else deviceIndex
         self.sampleRate = sampleRate if (sampleRate != None or self._pa == None) else int(self._pa.get_device_info_by_index(self.deviceIndex)["defaultSampleRate"])
-        self.channels = channels if self._pa == None else int(self._pa.get_device_info_by_index(self.deviceIndex)["maxInputChannels"])
+        self.channels = channels # if self._pa == None else int(self._pa.get_device_info_by_index(self.deviceIndex)["maxInputChannels"])
         self.chunkDuration = chunkDuration
         self.chunkLength = int(self.chunkDuration * self.sampleRate)
         self.flatten = flatten
@@ -66,19 +66,20 @@ class Mic:
 
         threading.Thread(target = self._loop, daemon = True).start()
 
-    async def start_RTC(self, sampleRate: int = 48000, channels: int = 1, manual: bool = True):
-        # experimental, manual handshake only
+    async def start_RTC(self, sampleRate: int = 44100, channels: int = 1, manual: bool = True):
         self._RTCInstance = RTCInstance()
         await self._RTCInstance.init_auto_config(offer = True, channels = ["audio"], stackData = True)
 
         self.sampleRate = sampleRate
         self.channels = channels
-        self.flatten = channels == 1
+
         if (manual):
-            self.sampleRate = input(f"Sample rate (enter to use default value 48000): ")
-            self.sampleRate = 48000 if self.sampleRate == "" else int(self.sampleRate)
+            self.sampleRate = input(f"Sample rate (enter to use default value 44100): ")
+            self.sampleRate = 44100 if self.sampleRate == "" else int(self.sampleRate)
             self.channels = input(f"Set input channels (enter to use default 1): ")
             self.channels = 1 if self.channels == "" else int(self.channels)
+
+        self.flatten = self.channels == 1
 
         self._running = True
         threading.Thread(target = self._loop, daemon = True).start()
