@@ -37,10 +37,10 @@ class Mic:
             self.start_on_device(sampleRate = sampleRate, deviceIndex = deviceIndex, chunkDuration = chunkDuration, flatten = flatten, denoise = denoise)
         self.ready = False
 
-    def start_on_device(self, sampleRate: int | None = None, deviceIndex: int | None = None, chunkDuration: int | float = 0.5, flatten: bool = True, denoise: bool = True, stem: bool = False, channels: int = 2):
+    def start_on_device(self, sampleRate: int | None = None, deviceIndex: int | None = None, chunkDuration: int | float = 0.5, flatten: bool = True, denoise: bool = True, stem: bool = False):
         self.deviceIndex = None if self._pa == None else int(self._pa.get_default_input_device_info()["index"]) if deviceIndex == None else deviceIndex
         self.sampleRate = sampleRate if (sampleRate != None or self._pa == None) else int(self._pa.get_device_info_by_index(self.deviceIndex)["defaultSampleRate"])
-        self.channels = channels # if self._pa == None else int(self._pa.get_device_info_by_index(self.deviceIndex)["maxInputChannels"])
+        self.channels = int(self._pa.get_device_info_by_index(self.deviceIndex)["maxInputChannels"])
         self.chunkDuration = chunkDuration
         self.chunkLength = int(self.chunkDuration * self.sampleRate)
         self.flatten = flatten
@@ -257,7 +257,8 @@ class Speaker:
 
     def play(self, audioSample, sourceSampleRate: int | None = None, sourceChannels: int | None = None):
         if (sourceSampleRate != None):
-            audioSample = resample_poly(audioSample, self.sampleRate, sourceSampleRate)
+            if (sourceSampleRate != self.sampleRate):
+                audioSample = resample_poly(audioSample, self.sampleRate, sourceSampleRate)
         if (sourceChannels != None):
             if (sourceChannels != self.channels):
                 audioSample = audioSample.reshape(-1, sourceChannels).mean(axis = 1)
