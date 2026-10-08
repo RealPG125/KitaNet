@@ -115,7 +115,7 @@ class Transcriber:
     transcriberID = 0
     transcriptionLock: asyncio.Lock | None = None
 
-    def __init__(self, name: str | None = None, whisperObject: WhisperObject | None = None, speaker: bool = False, beamSize: int = 1, filter: bool = True, useContextual: str | int = 1, splitParts: bool = False, manual: bool = True, diarization: bool = False, useRTCMic: bool = False):
+    def __init__(self, name: str | None = None, whisperObject: WhisperObject | None = None, speaker: bool = False, beamSize: int = 1, filter: bool = True, useContextual: str | int = 1, splitParts: bool = False, manual: bool = True, diarization: bool = False, useRTC: bool = False):
         if (whisperObject == None):
             raise ValueError("Error: whisperObject cannot be empty")
         self.name = name if name != None else f"Transcriber{Transcriber.transcriberID}"
@@ -138,18 +138,18 @@ class Transcriber:
                     speaker = speaker.lower() == "true"
                     break
             while True:
-                useRTCMic = input("Use RTC mic (true/false): ")
-                if (useRTCMic == ""):
-                    useRTCMic = False
+                useRTC = input("Use RTC mic (true/false): ")
+                if (useRTC == ""):
+                    useRTC = False
                     print("Using default settings: False")
                     break
-                elif (returnTuple := kitanet_helper.succeeds(int, useRTCMic))[0]:
-                    useRTCMic = returnTuple[1]
+                elif (returnTuple := kitanet_helper.succeeds(int, useRTC))[0]:
+                    useRTC = returnTuple[1]
                     break
                 else:
-                    if (useRTCMic.lower() not in ["true", "false"]):
+                    if (useRTC.lower() not in ["true", "false"]):
                         continue
-                    useRTCMic = useRTCMic.lower() == "true"
+                    useRTC = useRTC.lower() == "true"
                     break
             while True:
                 null, beamSize = kitanet_helper.succeeds(int, input("Beam size (1~20): "))
@@ -212,9 +212,10 @@ class Transcriber:
                         splitParts = splitParts.lower() == "true"
                         break
 
-        self.mic = Mic(manual = manual, useRTC = useRTCMic) # OPEN FOR DEBUG, CHANGE TO PROTECTED LATER
-        self.useRTC: bool = useRTCMic
+        self.mic = Mic(manual = manual, useRTC = useRTC)
+        self.useRTC: bool = useRTC
         self._speaker = Speaker(manual = manual) if speaker else None
+        self._RTCInstance = RTCInstance() if useRTC else None
         self._model: WhisperObject = whisperObject
         self._diarizationTool = DiarizationTool() if diarization else None
         self.enableDiarization: bool = diarization
@@ -238,7 +239,8 @@ class Transcriber:
             self.taskDiarization = asyncio.create_task(self._diarization())
 
     async def init_RTC(self):
-        await self.mic.start_RTC()
+        await self.mic.start_RTC(rtcInstance = self._RTCInstance)
+        await self._speaker.open_RTC(rtcInstance = self._RTCInstance)
 
     async def _loop(self):
         while True:
@@ -277,16 +279,15 @@ class Transcriber:
                 time.sleep(0.1)
                 continue
 
-            # stereo only
             audioSlice = self._queuePlayback.get()
             if (self._speaker != None):
                 if (self._speaker.sampleRate != self.mic.sampleRate):
                     audio = resample_poly(audioSlice, self._speaker.sampleRate, self.mic.sampleRate).astype(np.float32)
                 else:
-                    audio = audioSlice.astype(np.float32).ravel()
+                    audio = audioSlice.astype(np.float32)
                 # audio = np.repeat(audio[:, np.newaxis], self._speaker.channels, axis = 1).ravel()
 
-                self._speaker.play(audio, sourceChannels = self.mic.channels if not self.mic.flatten else 1)
+                self._speaker.play(audio, sourceChannels = self.mic.channels if not self.mic.flatten else 1, sourceSampleRate = self.mic.sampleRate)
 
     async def _diarization(self):
         while True:
@@ -462,6 +463,7 @@ async def main():
         # using rtc
         transcribers = [Transcriber(whisperObject = whisperObject, manual = True) for _ in range(instancesCount)]
         for transcriber in transcribers:
+            # configs, rtc assignments done here
             if (transcriber.useRTC): await transcriber.init_RTC()
 
         while True:

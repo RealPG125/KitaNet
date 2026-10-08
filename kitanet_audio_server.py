@@ -20,6 +20,7 @@ async def main():
 
         while (not mic.queue.empty()):
             audioSlice = mic.queue.get()
+            print(type(audioSlice))
             rtc.send_data(channelName = "audio", data = audioSlice.tobytes())
 
 if __name__ == "__main__":
