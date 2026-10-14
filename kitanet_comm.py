@@ -32,11 +32,13 @@ class RTCInstance:
         self.instanceID: int = RTCInstance.instanceNumber
         self._useSTUN: bool = useSTUN
         self.queues: dict[str, queue.Queue[Any]] = {}
+        self.storage: dict[str, list[Any]] = {}
         self._states: dict[str, str] = {"connectionstate": "none", "iceconnectionstate": "none", "icegatheringstate": "none", "signalingstate": "none"}
         self._offer = None
         self._answer = None
+        self.configured = False
         RTCInstance.instanceNumber += 1
-        self._pc.on("datachannel", self.on_datachannel)
+        self._pc.on("datachannel", self._register_channel)
         self._pc.on("connectionstatechange", self.connection_state_change)
         self._pc.on("iceconnectionstatechange", self.ice_connection_state_change)
         self._pc.on("icegatheringstatechange", self.ice_gathering_state_change)
@@ -57,6 +59,7 @@ class RTCInstance:
     async def init_auto_config(self, offer: bool = True, channels = None, stackData: bool = False):
         if (channels == None):
             channels = ["text"]
+
         if (offer):
             ip = get_ip()
             ipList: list[str] = []
@@ -75,10 +78,10 @@ class RTCInstance:
                 else:
                     print("Invalid IP address")
             while True:
-                serverPort = input("Input port for server (enter to use default value 80): ")
+                serverPort = input("Input port for server (enter to use default value 55555): ")
                 if (serverPort == ""):
-                    serverPort = 80
-                    print("Using default value: 80")
+                    serverPort = 55555
+                    print("Using default value: 55555")
                     break
                 elif (returnTuple := kitanet_helper.succeeds(int, serverPort))[0]:
                     if (0 <= returnTuple[1] <= 65535):
@@ -104,15 +107,17 @@ class RTCInstance:
             await server.wait_closed()
 
         else:
+            for channelName in channels:
+                self.queues[channelName] = queue.Queue()
             serverAddress = input("Input server IP address: ")
             if (serverAddress == ""):
                 serverAddress = "127.0.0.1"
                 print("Using default address localhost 127.0.0.1")
             while True:
-                serverPort = input("Input server port (enter to use default value 80): ")
+                serverPort = input("Input server port (enter to use default value 55555): ")
                 if (serverPort == ""):
-                    serverPort = 80
-                    print("Using default value: 80")
+                    serverPort = 55555
+                    print("Using default value: 55555")
                     break
                 elif (returnTuple := kitanet_helper.succeeds(int, serverPort))[0]:
                     if (0 <= returnTuple[1] <= 65535):
@@ -154,9 +159,9 @@ class RTCInstance:
                 await websocket.close(code = 1000)
 
             if (self.enableDebug): print(f"CommsPort instance {self.instanceID} autoconfig: WebSocket client closed")
-            
-            
 
+        self.configured = True
+            
     def connection_state_change(self):
         state = self._pc.connectionState
         self._states["connectionstate"] = state
@@ -198,10 +203,7 @@ class RTCInstance:
         if (channelName != None):
             channel = self._pc.createDataChannel(channelName)
 
-            self._register_channel(channel)
-
-            if (stackToQueue):
-                self.queues[channelName] = queue.Queue()
+            self._register_channel(channel, stackToQueue = stackToQueue)
 
             if (self.enableDebug): print(f"CommsPort instance {self.instanceID}: Created and registered channel {channelName}")
             return channel
@@ -210,24 +212,25 @@ class RTCInstance:
             if (self.enableDebug): print(f"CommsPort instance {self.instanceID}: Channel name is empty, aborting channel creation")
             return None
 
-    def _register_channel(self, channel: RTCDataChannel, manual: bool = True):
+    def _register_channel(self, channel: RTCDataChannel, stackToQueue: bool = False):
         self._channels.append(channel)
+        self.storage[channel.label] = []
+        if (stackToQueue):
+            self.queues[channel.label] = queue.Queue()
         channel.on("open", lambda: self.on_channel_open(channel = channel))
         channel.on("message", lambda message: self.on_message(channel = channel, message = message))
         channel.on("close", lambda: self.on_channel_close(channel = channel))
 
         if (self.enableDebug): print(f"CommsPort instance {self.instanceID}: Registered channel {channel.label}")
 
-    def on_datachannel(self, channel: RTCDataChannel):
-        self._register_channel(channel)
-
     def on_channel_open(self, channel: RTCDataChannel):
         if (self.enableDebug): print(f"CommsPort instance {self.instanceID}: Channel {channel.label} is now open")
 
     def on_message(self, channel: RTCDataChannel, message: Any):
-        if (self.enableDebug): print(f"CommsPort instance {self.instanceID}: Received message from channel {channel.label}: {message}")
+        if (self.enableDebug): print(f"CommsPort instance {self.instanceID}: Received message from channel {channel.label}: {str(message):.20}...")
         if (channel.label in self.queues):
             self.queues[channel.label].put(message)
+            # print(f"Put queue to {channel.label}")
 
     def on_channel_close(self, channel: RTCDataChannel):
         if (self.enableDebug): print(f"CommsPort instance {self.instanceID}: Channel {channel.label} is now closed")
@@ -240,15 +243,23 @@ class RTCInstance:
         for channel in self._channels:
             if (channel.label == channelName):
                 channel.send(data)
-                if (self.enableDebug): print(f"CommsPort instance {self.instanceID}: Sent data {data}")
+                if (self.enableDebug): print(f"CommsPort instance {self.instanceID}: Sent data {str(data):.40}...\n")
                 break
 
     def get_queue(self, channelName: str):
-        self.queues[channelName].get()
+        return self.queues[channelName].get()
+
+    def queue_has_item(self, channelName: str) -> bool:
+        return not self.queues[channelName].empty()
 
     def get_state(self, stateName: str):
         return self._states[stateName]
 
+    async def drain_queue_to_storage(self, channelName: str, eofString: str = "EOF"):
+        while ((item := self.get_queue(channelName)) != eofString):
+            # print(f"DRAINING {item}")
+            self.storage[channelName].append(item)
+            
 async def main():
     rtc = RTCInstance(debug = True)
     while True:
