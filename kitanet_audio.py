@@ -161,6 +161,10 @@ class Mic:
 
         self.start_on_device(sampleRate = sampleRate, deviceIndex = deviceIndex, chunkDuration = chunkDuration, flatten = flatten, denoise = denoise, stem = stem)
 
+    def flush_queue(self):
+        while (not self.queue.empty()):
+            self.queue.get_nowait()
+
     def _loop(self):
         print(f"RTC device {self._RTCInstance.instanceID}: started loop" if self._pa == None else f"Mic {self.deviceIndex}: started loop with {self.sampleRate} hz sampling rate and {self.chunkLength} samples length chunk")
 
@@ -323,6 +327,21 @@ class Speaker:
             self._stream.write(audioSample.tobytes())
         elif (self._RTCInstance != None):
             self._RTCInstance.send_data("audio", audioSample.tobytes())
+
+    async def async_play(self, audioSample, sourceSampleRate: int | None = None, sourceChannels: int | None = None):
+            if (sourceSampleRate != None):
+                if (sourceSampleRate != self.sampleRate):
+                    audioSample = resample_poly(audioSample, self.sampleRate, sourceSampleRate)
+            if (sourceChannels != None):
+                if (sourceChannels != self.channels):
+                    audioSample = audioSample.reshape(-1, sourceChannels).mean(axis = 1)
+                    audioSample = np.repeat(audioSample[:, np.newaxis], self.channels, axis = 1).ravel()
+            if (self._pa != None):
+                # print(f"source {sourceSampleRate}/{sourceChannels} | device {self.sampleRate}/{self.channels}")
+                # print(f"writing to stream with peak level of {np.max(np.abs(audioSample))}")
+                self._stream.write(audioSample.tobytes())
+            elif (self._RTCInstance != None):
+                self._RTCInstance.send_data("audio", audioSample.tobytes())
 
     def restart(self):
         try:
