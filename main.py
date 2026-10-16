@@ -16,12 +16,14 @@ from io import BytesIO
 from pydub import AudioSegment
 from kitanet_audio import Mic, Speaker
 from kitanet_comm import RTCInstance
+from pykokoro import GenerationConfig, KokoroSynthesizer, SynthesisConfig
+from datetime import datetime
 
 # model     : 軽 → 重: "tiny" (75MB), "base" (142MB), "small" (466MB), "medium" (1.5GB), "large-v3" (3.0GB)
 # device    : "cpu", Nvidia GPU: "cuda"
 
 MAX_BUFFER_DURATION = 20
-SILENCE_THRESHOLD = 0.03
+SILENCE_THRESHOLD = 0.05
 LLM_TRIGGER_SILENCE_DURATION = 2.0
 
 class WhisperObject:
@@ -305,6 +307,7 @@ class Transcriber:
             #     await asyncio.sleep(MAX_BUFFER_DURATION / 8)
 
     def flush_buffer(self):
+        self.mic.flush_queue()
         self._buffer = np.empty(0, dtype = np.float32)
 
     def close(self):
@@ -343,14 +346,19 @@ class DiarizationTool:
 class TTS:
     edgeTTSLanguageVoiceDict = {"ja": "ja-JP-NanamiNeural", "en": "en-US-EmmaNeural", "id": "id-ID-GadisNeural"}
     kokoroTTSLanguageVoiceDict = {"ja": "jf_alpha", "en": "af_heart"}
+    pykokoroTTSLanguageCodeDict = {"ja": "ja-jp", "en": "en-us"}
 
     def __init__(self, speakerInstance: Speaker | None = None, fallbackEdgeVoiceModel: str = "ja-JP-NanamiNeural", manual: bool = False, externalSpeaker: bool = False, mode: str = "edge"):
         import edge_tts
         from kokoro import KPipeline
 
-        self._edgeTTS = edge_tts
-        self._kokoroTTSAggregate: dict[str, KPipeline] = {"ja": KPipeline(lang_code = "j"), "en": KPipeline(lang_code = "a")}
         self.mode = mode
+        self._edgeTTS = edge_tts if mode == "edge" else None
+        self._kokoroTTSAggregate: dict[str, KPipeline] | None = {"ja": KPipeline(lang_code = "j"), "en": KPipeline(lang_code = "a")} if mode == "kokoro" else None
+        if (mode == "pykokoro"):
+            redundantOverheadConfigThatDoesAbsolutelyNoShit = SynthesisConfig(voice = TTS.kokoroTTSLanguageVoiceDict[language], generation = GenerationConfig(lang = TTS.pykokoroTTSLanguageCodeDict[language]))
+            synthesizer = KokoroSynthesizer(redundantOverheadConfigThatDoesAbsolutelyNoShit)
+            self._pykokoroSynthesizer = synthesizer.__enter__()
         self._voiceShortnames = []
         self._voiceList = []
         self.manual = manual
@@ -359,7 +367,7 @@ class TTS:
         self._speaker = None if externalSpeaker else Speaker(manual = manual) if speakerInstance == None else speakerInstance
     
     def prompt_manual(self):
-        if (self.manual):
+        if (self.manual and self.mode == "edge"):
             for index, voice in enumerate(self._voiceShortnames):
                 print(f"[{index}] {voice}")
             while True:
@@ -373,7 +381,7 @@ class TTS:
                         voiceModel = self._voiceShortnames[returnTuple[1]]
                         break
             
-        self._voiceModel = voiceModel
+            self._voiceModel = voiceModel
 
     def invoke_speak(self, text, language: str = "en", speakerInstance: Speaker | None = None):
         if (self.mode == "edge"):
@@ -389,30 +397,52 @@ class TTS:
             audioData = np.array(AudioSegment.from_mp3(BytesIO(audioData)).get_array_of_samples())
             audioData = audioData.astype(np.float32) / np.iinfo(np.int16).max
 
+            if speakerInstance == None: 
+                self._speaker.play(audioData, sourceSampleRate = 24000, sourceChannels = 1)
+            else:
+                speakerInstance.play(audioData, sourceSampleRate = 24000, sourceChannels = 1)
+
         elif (self.mode == "kokoro"):
-            generator = self._kokoroTTSAggregate[language if language in TTS.kokoroTTSLanguageVoiceDict else "en"](text = text, voice = TTS.kokoroTTSLanguageVoiceDict[language] if language in TTS.kokoroTTSLanguageVoiceDict else "en")
+            text = text.split(".")
+            language = language if language in TTS.kokoroTTSLanguageVoiceDict else "en"
+            generator = self._kokoroTTSAggregate[language](text = text, voice = TTS.kokoroTTSLanguageVoiceDict[language], split_pattern = r'[.!?\n]+')
 
             audioData = np.array([], dtype = np.float32)
 
             for i, (gs, ps, audio) in enumerate(generator):
-                audioData = np.concatenate((audioData, audio.cpu().numpy()))
-        
-        if speakerInstance == None: 
-            self._speaker.play(audioData, sourceSampleRate = 24000, sourceChannels = 1)
-        else:
-            speakerInstance.play(audioData, sourceSampleRate = 24000, sourceChannels = 1)
+                audioData = audio.cpu().numpy()
+                if speakerInstance == None: 
+                    asyncio.create_task(self._speaker.async_play(audioData, sourceSampleRate = 24000, sourceChannels = 1))
+                else:
+                    asyncio.create_task(speakerInstance.async_play(audioData, sourceSampleRate = 24000, sourceChannels = 1))
 
+        elif (self.mode == "pykokoro"):
+            language = language if language in TTS.kokoroTTSLanguageVoiceDict else "en"
+            
+            rendered = self._pykokoroSynthesizer.synthesize_text(text, language = TTS.pykokoroTTSLanguageCodeDict[language], voice = TTS.kokoroTTSLanguageVoiceDict[language])
+
+            audioData = rendered.audio.astype(np.float32)
+
+            if speakerInstance == None: 
+                asyncio.create_task(self._speaker.async_play(audioData, sourceSampleRate = 24000, sourceChannels = 1))
+            else:
+                asyncio.create_task(speakerInstance.async_play(audioData, sourceSampleRate = 24000, sourceChannels = 1))
+        
     def stop_audio(self):
         try:
             self._speaker.abortPlayback()
         except:
             pass
 
+    def close(self):
+        self._pykokoroSynthesizer.__exit__()
+
     @classmethod
     async def create(cls, speakerInstance: Speaker | None = None, voiceModel: str = "ja-JP-NanamiNeural", manual: bool = False, externalSpeaker: bool = False, mode: str = "edge"):
         instance = cls(speakerInstance = speakerInstance, fallbackEdgeVoiceModel = voiceModel, manual = manual, externalSpeaker = externalSpeaker, mode = mode)
-        instance._voiceList = await instance._edgeTTS.voices.list_voices()
-        instance._voiceShortnames = [voice["ShortName"] for voice in instance._voiceList]
+        if (mode == "edge"):
+            instance._voiceList = await instance._edgeTTS.voices.list_voices()
+            instance._voiceShortnames = [voice["ShortName"] for voice in instance._voiceList]
         instance.prompt_manual()
         return instance
 
@@ -442,22 +472,28 @@ class LLM:
         self.systemPrompt = "Reply in the same language as the input text. Be a casual chatting company." if systemPrompt == None else systemPrompt
         self.response = None
 
-    def get_response(self, message: str | None = None):
-        self.response = self.ollama.chat(model = self.model, messages = [
-            {"role": "system", "content": self.systemPrompt},
-            {"role": "user", "content": message}
-            ]) if message != None else "Empty input message"
+    async def get_response(self, message: str | None = None, memory: list[dict[str, str]] = []):
+        compiledMessages = [{"role": "system", "content": self.systemPrompt}]
+        for item in memory:
+            compiledMessages.append({"role": "user", "content": item["user"]})
+            compiledMessages.append({"role": "assistant", "content": item["response"]})
+        compiledMessages.append({"role": "user", "content": message})
+
+        self.response = self.ollama.chat(model = self.model, messages = compiledMessages) if message != None else "Empty input message"
         return self.response
 
-    def get_text_response(self, message: str | None = None) -> str:
-        return self.get_response(message = message)['message']['content']
+    async def get_text_response(self, message: str | None = None, memory: list[dict[str, str]] = []) -> str:
+        response = await self.get_response(message = message, memory = memory)
+        return response['message']['content']
 
-    async def audio_chat(self, message: str | None = None, language: str = "en", speakerInstance: Speaker | None = None):
+    async def audio_chat(self, message: str | None = None, language: str = "en", speakerInstance: Speaker | None = None, memory: list[dict[str, str]] = []) -> str:
         if (not self._enableAudio):
             print("Audio is disabled")
+            return ""
         else:
-            response = self.get_text_response(message = message)
+            response = await self.get_text_response(message = message, memory = memory)
             self.tts.invoke_speak(text = response, language = language, speakerInstance = speakerInstance)
+            return response
 
     def stop_audio(self):
         self.tts.stop_audio()
@@ -483,6 +519,9 @@ class TableResponder:
         self.llmTriggerSilenceDuration = 2.0
         self.previewTranscribeText = ""
         self.previewTranscribeLanguage = ""
+        self.memoryEntryLimit = 5
+        self._memory = []
+        # dict[str, dict[str, str]] = {} # ["timestamp": ["user": "user chat", "response": "response chat"]]
 
     async def init_RTC(self):
         await self._transcriber.init_RTC()
@@ -498,22 +537,32 @@ class TableResponder:
         self.startTime = time.perf_counter()
 
         if (self.audioPeakAmplitude > self.SILENCE_THRESHOLD):
-            self.silentTime = 0
+            self.silentTime = 0.0
             self.spoken = True
 
         if ((self.silentTime > self.llmTriggerSilenceDuration) and self.spoken):
+            self._transcriber.mic.ready = False
             message = self._transcriber.transcribeTextNoncontextual
-            await self._LLMInstance.audio_chat(message = message, language = self._transcriber.languageNoncontextual, speakerInstance = self._speaker)
+            response = await self._LLMInstance.audio_chat(message = message, language = self._transcriber.languageNoncontextual, speakerInstance = self._speaker, memory = self._memory)
+            self._add_memory(message = message, response = response)
             self._transcriber.flush_buffer()
+            self._transcriber.mic.ready = True
             self.silentTime = 0.0
             self.spoken = False
 
-        print(f"[{self._transcriber.mic.peakAmplitude}] [{self.silentTime}s {self.spoken}] {self._transcriber.transcribeTextNoncontextual} | {(self._LLMInstance.response["message"]["content"] if self._LLMInstance.response != None else ""):.40}\033[K\033[1A\r]")
+    def print_state(self):
+        print(f"[{self._transcriber.mic.peakAmplitude:.5f}] [{self.silentTime:.5f}s {self.spoken}] {self._transcriber.transcribeTextNoncontextual:.40} | {(self._LLMInstance.response["message"]["content"] if self._LLMInstance.response != None else ""):.40}\033[K")
 
     # CALL ONLY FOR TEXT LOOP ["text" channel]
     # async def loop_frame_text(self):
 
-
+    def _add_memory(self, message: str = "", response: str = ""):
+        timeNow = datetime.now()
+        timestamp = timeNow.strftime("%Y-%m-%d %H:%M:%S")
+        memory = {"timestamp": timestamp, "user": message, "response": response}
+        self._memory.append(memory)
+        if (len(self._memory) > 5):
+            self._memory.pop(0)
 
     # USE NONCONTEXTUAL BY DEFAULT, resort to raw string for now
     def process_transcription_preview(self):
@@ -529,6 +578,7 @@ async def main():
             null, tablesCount = kitanet_helper.succeeds(int, input("Table instances: "))
             if (0 < tablesCount):
                 break
+
         Transcriber.transcriptionLock = asyncio.Lock()
         llm = await LLM.create(model = "qwen2.5:3b-instruct-q8_0", manual = True, externalSpeaker = True, ttsMode = "kokoro")
         tables = [TableResponder(llmInstance = llm, manual = True) for _ in range(tablesCount)]
@@ -536,12 +586,17 @@ async def main():
             await table.init_RTC()
             table._transcriber.mic.ready = True
 
+        await llm.get_text_response(message = "")
+
         while True:
             for table in tables:
                 await table.loop_frame_audio()
-                await asyncio.sleep(0.05)
+                table.print_state()
+            print(f"\033[{len(tables)}A\r", end = "")
+            await asyncio.sleep(0.05)
 
     except KeyboardInterrupt:
+        llm.tts.close()
         for table in tables:
             table._transcriber.close()
         

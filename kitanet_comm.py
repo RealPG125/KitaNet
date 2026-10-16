@@ -243,7 +243,7 @@ class RTCInstance:
         for channel in self._channels:
             if (channel.label == channelName):
                 channel.send(data)
-                if (self.enableDebug): print(f"CommsPort instance {self.instanceID}: Sent data {str(data):.40}...\n")
+                if (self.enableDebug): print(f"CommsPort instance {self.instanceID}: Sent data {str(data):.40}...")
                 break
 
     def get_queue(self, channelName: str):

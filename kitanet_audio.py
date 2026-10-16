@@ -175,6 +175,7 @@ class Mic:
 
         while (self._running):
             if (not self.ready):
+                self.flush_queue()
                 time.sleep(0.1)
                 continue
 

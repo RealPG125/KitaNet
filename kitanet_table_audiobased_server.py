@@ -11,7 +11,7 @@ from kitanet_audio import Mic, Speaker
 
 
 async def main():
-    rtc = RTCInstance(debug = False)
+    rtc = RTCInstance(debug = True)
     await rtc.init_auto_config(offer = False, channels = ["audio", "control"], stackData = True)
     mic = Mic(manual = True)
     speaker = Speaker(manual = True)
@@ -34,6 +34,7 @@ async def main():
             rtc.send_data(channelName = "audio", data = sendAudioSlice.tobytes())
 
         while (rtc.queue_has_item("audio")):
+            mic.ready = False
             playbackAudioSlice = np.frombuffer(rtc.get_queue(channelName = "audio"), dtype = np.float32)
             if (speaker.sampleRate != mic.sampleRate):
                 audio = resample_poly(playbackAudioSlice, speaker.sampleRate, mic.sampleRate).astype(np.float32)
@@ -41,6 +42,7 @@ async def main():
                 audio = playbackAudioSlice.astype(np.float32).ravel()
 
             speaker.play(audio)
+            mic.ready = True
 
 
 if __name__ == "__main__":
