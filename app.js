@@ -1,5 +1,5 @@
 /* ═══════════════════════════════════════════
-   店舗接客フロントエンド（ごみ箱＆カスタムUI統合版）
+   店舗接客フロントエンド（追加アレルゲンの削除対応版）
 ═══════════════════════════════════════════ */
 const API_BASE = "http://127.0.0.1:8000/api";
 
@@ -13,13 +13,50 @@ const PREFECTURES = [
   "熊本県", "大分県", "宮崎県", "鹿児島県", "沖縄県", "その他"
 ];
 
-let allergenMaster = ["エビ", "カニ", "小麦", "そば", "卵", "乳製品", "落花生", "大豆"];
+// 初期基本マスター（削除不可の保護対象）
+const DEFAULT_ALLERGENS = [
+  // 義務：特定原材料（9品目）
+  "卵", "乳", "小麦", "くるみ", "落花生（ピーナッツ）", "そば", "えび", "かに", "カシューナッツ",
+  // 推奨：特定原材料に準ずるもの（20品目）
+  "大豆", "キウイフルーツ", "バナナ", "もも", "りんご", "オレンジ",
+  "アーモンド", "ピスタチオ", "マカダミアナッツ", "さけ", "さば", "いくら", "いか",
+  "あわび", "ごま", "牛肉", "豚肉", "鶏肉", "やまいも", "ゼラチン"
+];
+
+let allergenMaster = [...DEFAULT_ALLERGENS];
+
+// 表記ゆれマッピング
+const ALLERGEN_MAP = {
+  "エビ": "えび", "海老": "えび",
+  "カニ": "かに", "蟹": "かに",
+  "ソバ": "そば", "蕎麦": "そば",
+  "コムギ": "小麦",
+  "たまご": "卵", "タマゴ": "卵", "玉子": "卵", "鶏卵": "卵",
+  "乳製品": "乳", "ミルク": "乳", "牛乳": "乳",
+  "落花生": "落花生（ピーナッツ）", "ピーナッツ": "落花生（ピーナッツ）",
+  "クルミ": "くるみ", "胡桃": "くるみ",
+  "サケ": "さけ", "鮭": "さけ", "サーモン": "さけ",
+  "サバ": "さば", "鯖": "さば",
+  "イカ": "いか", "烏賊": "いか",
+  "アワビ": "あわび", "鮑": "あわび",
+  "ゴマ": "ごま", "胡麻": "ごま",
+  "ヤマイモ": "やまいも", "山芋": "やまいも",
+  "キウイ": "キウイフルーツ"
+};
+
+function normalizeAllergenUI(name) {
+  const clean = name.trim();
+  return ALLERGEN_MAP[clean] || clean;
+}
+
 let DB = {};
 let TABLES = {};
 
+// 待合リストを賑やかに（3組待ち）
 let waitingQueue = [
-  { queueId: "q-init-01", guestsCount: 2, userIds: ["u-0006", "u-0007"] },
-  { queueId: "q-init-02", guestsCount: 1, userIds: ["u-0008"] }
+  { queueId: "q-init-01", guestsCount: 2, userIds: ["u-0011", "u-0012"] }, // 王様・李様（中国インバウンド・えびアレルギー）
+  { queueId: "q-init-02", guestsCount: 1, userIds: ["u-0008"] },           // 鈴木様（そばアレルギー注意）
+  { queueId: "q-init-03", guestsCount: 1, userIds: ["u-0014"] }            // 木村様（女子旅・キウイアレルギー）
 ];
 
 let selectedTable = 1;
@@ -29,7 +66,7 @@ let lastUndo = null;
 let editingUserId = null;
 let currentEditingFavs = [];
 let deletePendingQueueId = null;
-let currentLedgerTab = "active"; // "active" または "trash"
+let currentLedgerTab = "active";
 let confirmCallback = null;
 
 async function initApp() {
@@ -59,7 +96,8 @@ async function loadDatabase() {
 
     Object.values(DB).forEach(u => {
       u.allergies.forEach(a => {
-        if (!allergenMaster.includes(a)) allergenMaster.push(a);
+        const norm = normalizeAllergenUI(a);
+        if (!allergenMaster.includes(norm)) allergenMaster.push(norm);
       });
     });
 
@@ -78,7 +116,7 @@ function updateTrashBadge() {
 }
 
 /* ═══════════════════════════════════════════
-   カスタム確認モーダル（標準ポップアップ代替）
+   カスタム確認モーダル
 ═══════════════════════════════════════════ */
 function showConfirmModal(title, message, actionBtnText, isDanger, onConfirm) {
   document.getElementById("confirm-dialog-title").innerText = title;
@@ -156,7 +194,7 @@ function refreshCard(id) {
     if (t.type === 'speaking') {
       bodyHtml = `<span class="chip chip-green">🎙️ 対話中</span>`;
     } else {
-      const uniqueAlgs = [...new Set(allAllergies)];
+      const uniqueAlgs = [...new Set(allAllergies.map(normalizeAllergenUI))];
       bodyHtml = uniqueAlgs.map(a => `<span class="chip chip-red">${a}</span>`).join('');
     }
     footHtml = `<span>${t.stayTime || '利用中'}</span>`;
@@ -191,7 +229,7 @@ function renderWaiting() {
 
   container.innerHTML = waitingQueue.map(item => {
     const users = item.userIds.map(uid => DB[uid]).filter(Boolean);
-    const allAllergies = [...new Set(users.flatMap(u => u.allergies))];
+    const allAllergies = [...new Set(users.flatMap(u => u.allergies).map(normalizeAllergenUI))];
     const alg = allAllergies.length > 0;
     const isSelected = selectedQueueId === item.queueId;
 
@@ -261,14 +299,15 @@ function showWaitingDetail(queueId) {
 
   const users = item.userIds.map(uid => DB[uid]).filter(Boolean);
   content.innerHTML = users.map((u, index) => {
-    const alg = u.allergies.length > 0;
+    const uniqueAlgs = [...new Set(u.allergies.map(normalizeAllergenUI))];
+    const alg = uniqueAlgs.length > 0;
     return `
       <div class="guest-card ${alg ? 'danger' : ''}" onclick="openGuest('${u.id}')">
         <div class="flex justify-between items-center">
           <span style="font-weight:800;">👤 ${u.name} ${index === 0 && users.length > 1 ? '<span class="chip chip-blue">代表</span>' : ''}</span>
           <span class="chip chip-sub">来店 ${u.count}回目</span>
         </div>
-        ${alg ? `<div>${u.allergies.map(a => `<span class="chip chip-red">${a}</span>`).join(' ')}</div>` : ''}
+        ${alg ? `<div>${uniqueAlgs.map(a => `<span class="chip chip-red">${a}</span>`).join(' ')}</div>` : ''}
         ${u.favs.length ? `<div class="text-xs" style="color:#5c441b;">⭐ 好物: ${u.favs.join('、')}</div>` : ''}
         <div class="hint-box">
           <div class="hint-label">💡 接客メモ</div>
@@ -406,14 +445,15 @@ function showDetail(id) {
     : t.userIds.map((uid, index) => {
         const u = DB[uid];
         if (!u) return '';
-        const alg = u.allergies.length > 0;
+        const uniqueAlgs = [...new Set(u.allergies.map(normalizeAllergenUI))];
+        const alg = uniqueAlgs.length > 0;
         return `
           <div class="guest-card ${alg ? 'danger' : ''}" onclick="openGuest('${u.id}')">
             <div class="flex justify-between items-center">
               <span style="font-weight:800;">👤 ${u.name} ${index === 0 && t.userIds.length > 1 ? '<span class="chip chip-blue">代表</span>' : ''}</span>
               <span class="chip chip-sub">来店 ${u.count}回目</span>
             </div>
-            ${alg ? `<div>${u.allergies.map(a => `<span class="chip chip-red">${a}</span>`).join(' ')}</div>` : ''}
+            ${alg ? `<div>${uniqueAlgs.map(a => `<span class="chip chip-red">${a}</span>`).join(' ')}</div>` : ''}
             ${u.favs.length ? `<div class="text-xs" style="color:#5c441b;">⭐ 好物: ${u.favs.join('、')}</div>` : ''}
             <div class="hint-box">
               <div class="hint-label">💡 接客メモ (UserMemory)</div>
@@ -463,7 +503,7 @@ function renderUserForm(u, prefix) {
     <div class="er-item"><div class="er-label">最終来店</div><div style="font-size:0.8rem; font-weight:700; margin-top:4px;">${u.last || '-'}</div></div>
   `;
 
-  renderAllergyEditor(u.allergies, `${prefix}-allergy`);
+  renderAllergyEditor(u.allergies.map(normalizeAllergenUI), `${prefix}-allergy`);
   currentEditingFavs = [...(u.favs || [])];
   renderFavChips(prefix);
   document.getElementById(`${prefix}-hint`).value = u.hint || '';
@@ -503,24 +543,79 @@ function removeFavMenu(prefix, index) {
   renderFavChips(prefix);
 }
 
+/* ═══════════════════════════════════════════
+   アレルゲンUI描画（追加品目のみ削除ボタンを表示）
+═══════════════════════════════════════════ */
 function renderAllergyEditor(selected, containerId) {
-  document.getElementById(containerId).innerHTML = allergenMaster.map(item => `
-    <label class="allergy-label">
-      <input type="checkbox" value="${item}" ${selected.includes(item) ? 'checked' : ''}>
-      <span>${item}</span>
-    </label>`
-  ).join('');
+  const normSelected = selected.map(normalizeAllergenUI);
+  document.getElementById(containerId).innerHTML = allergenMaster.map(item => {
+    const isCustom = !DEFAULT_ALLERGENS.includes(item);
+    return `
+      <label class="allergy-label">
+        <input type="checkbox" value="${item}" ${normSelected.includes(item) ? 'checked' : ''}>
+        <span>${item}</span>
+        ${isCustom ? `<button type="button" class="allergy-del-btn" title="マスターから削除" onclick="removeCustomAllergen(event, '${item}')">✕</button>` : ''}
+      </label>`;
+  }).join('');
 }
 
 function addAllergen(editorId, inputId) {
   const input = document.getElementById(inputId);
-  const val = input.value.trim();
-  if (!val) return;
-  if (!allergenMaster.includes(val)) allergenMaster.push(val);
-  const checked = [...document.querySelectorAll(`#${editorId} input:checked`)].map(cb => cb.value);
+  const rawVal = input.value.trim();
+  if (!rawVal) return;
+  const val = normalizeAllergenUI(rawVal);
+
+  if (!allergenMaster.includes(val)) {
+    allergenMaster.push(val);
+  }
+  const checked = [...document.querySelectorAll(`#${editorId} input:checked`)].map(cb => normalizeAllergenUI(cb.value));
   if (!checked.includes(val)) checked.push(val);
   renderAllergyEditor(checked, editorId);
   input.value = '';
+}
+
+// ユーザーが新しく追加したアレルゲンだけを削除する処理
+function removeCustomAllergen(event, allergenName) {
+  event.preventDefault();
+  event.stopPropagation();
+
+  // 基本アレルゲンは削除対象外
+  if (DEFAULT_ALLERGENS.includes(allergenName)) return;
+
+  showConfirmModal(
+    "アレルゲンの削除",
+    `追加した「${allergenName}」を選択肢から削除しますか？`,
+    "削除する",
+    true,
+    () => {
+      allergenMaster = allergenMaster.filter(a => a !== allergenName);
+
+      // 開いているモーダルのアレルゲン欄を即時再描画
+      const guestAllergyContainer = document.getElementById('mg-allergy');
+      if (guestAllergyContainer && document.getElementById('modal-guest').style.display === 'flex') {
+        const checked = [...guestAllergyContainer.querySelectorAll('input:checked')].map(cb => cb.value).filter(a => a !== allergenName);
+        renderAllergyEditor(checked, 'mg-allergy');
+      }
+
+      const ledgerAllergyContainer = document.getElementById('lp-allergy');
+      if (ledgerAllergyContainer && document.getElementById('modal-ledger').style.display === 'flex') {
+        const checked = [...ledgerAllergyContainer.querySelectorAll('input:checked')].map(cb => cb.value).filter(a => a !== allergenName);
+        renderAllergyEditor(checked, 'lp-allergy');
+      }
+
+      const quickAddModal = document.getElementById('modal-add');
+      if (quickAddModal && quickAddModal.style.display === 'flex') {
+        const count = parseInt(document.getElementById('qa-count').value, 10) || 1;
+        for (let i = 1; i <= count; i++) {
+          const c = document.getElementById(`qa-allergy-${i}`);
+          if (c) {
+            const checked = [...c.querySelectorAll('input:checked')].map(cb => cb.value).filter(a => a !== allergenName);
+            renderAllergyEditor(checked, `qa-allergy-${i}`);
+          }
+        }
+      }
+    }
+  );
 }
 
 function closeGuest() {
@@ -534,12 +629,15 @@ async function saveGuest() {
   const customRegion = document.getElementById('mg-region-custom').value.trim();
   const finalRegion = (regionSelect === "その他") ? (customRegion || "その他") : regionSelect;
 
+  const rawAllergies = [...document.querySelectorAll('#mg-allergy input:checked')].map(cb => cb.value);
+  const normalizedAllergies = [...new Set(rawAllergies.map(normalizeAllergenUI))];
+
   const payload = {
     name: document.getElementById('mg-name-val').value.trim() || '無名のお客様',
     region: finalRegion,
     count: parseInt(document.getElementById('mg-count-val').value, 10) || 1,
     hint: document.getElementById('mg-hint').value.trim(),
-    allergies: [...document.querySelectorAll('#mg-allergy input:checked')].map(cb => cb.value),
+    allergies: normalizedAllergies,
     favs: [...currentEditingFavs]
   };
 
@@ -561,7 +659,6 @@ async function saveGuest() {
 /* ═══════════════════════════════════════════
    ごみ箱・復元・完全削除の操作処理
 ═══════════════════════════════════════════ */
-// 1. ごみ箱に入れる（論理削除）
 function confirmMoveToTrash() {
   if (!editingUserId) return;
   const targetUser = DB[editingUserId];
@@ -591,7 +688,6 @@ function confirmMoveToTrash() {
   );
 }
 
-// 2. ごみ箱から復元する
 function restoreUser(userId) {
   const targetUser = DB[userId];
   const userName = targetUser?.name || "この顧客";
@@ -613,7 +709,6 @@ function restoreUser(userId) {
   );
 }
 
-// 3. 本当の削除（完全抹消・物理削除）
 function purgeUser(userId) {
   const targetUser = DB[userId];
   const userName = targetUser?.name || "この顧客";
@@ -635,13 +730,22 @@ function purgeUser(userId) {
   );
 }
 
+/* ═══════════════════════════════════════════
+   新規受付モーダルの開閉処理
+═══════════════════════════════════════════ */
 function openQuickAdd() {
+  const modal = document.getElementById('modal-add');
+  if (!modal) return;
+  document.getElementById('qa-count').value = 2;
   renderQuickAddForms();
-  document.getElementById('modal-add').style.display = 'flex';
+  modal.style.display = 'flex';
 }
 
 function closeAdd() {
-  document.getElementById('modal-add').style.display = 'none';
+  const modal = document.getElementById('modal-add');
+  if (modal) {
+    modal.style.display = 'none';
+  }
 }
 
 function renderQuickAddForms() {
@@ -673,24 +777,58 @@ function renderQuickAddForms() {
             </select>
             <input type="text" id="qa-pregion-custom-${i}" class="input-base" 
                    style="margin-top:4px; display:none;" 
-                   placeholder="手動入力">
+                   placeholder="市区町村や海外名を入力">
           </div>
         </div>
+
         <div>
-          <label class="form-label text-danger">アレルゲン</label>
-          <div class="allergy-editor" id="qa-allergy-${i}">
-            ${allergenMaster.map(item => `
-              <label class="allergy-label">
-                <input type="checkbox" value="${item}">
-                <span>${item}</span>
-              </label>
-            `).join('')}
+          <label class="form-label text-danger">アレルゲン（重要度順）</label>
+          <div class="allergy-editor" id="qa-allergy-${i}"></div>
+          <div class="custom-allergy-bar" style="margin-top: 6px;">
+            <input type="text" id="qa-custom-allergy-${i}" class="custom-allergy-input" placeholder="＋ 表記ゆれ自動統一（例: エビ、ピーナッツ）">
+            <button type="button" class="btn btn-secondary" onclick="addCustomAllergenToQuick(${i})">追加</button>
           </div>
+        </div>
+
+        <div>
+          <label class="form-label">接客メモ・ノート</label>
+          <textarea id="qa-hint-${i}" class="input-base" rows="2" placeholder="初回来店、お祝い利用、味の好み、話題など"></textarea>
         </div>
       </div>
     `;
   }
   container.innerHTML = html;
+
+  // 各フォームのアレルゲンチェックボックスを描画
+  for (let i = 1; i <= count; i++) {
+    renderAllergyEditor([], `qa-allergy-${i}`);
+  }
+}
+
+function addCustomAllergenToQuick(formIdx) {
+  const input = document.getElementById(`qa-custom-allergy-${formIdx}`);
+  const rawVal = input.value.trim();
+  if (!rawVal) return;
+  const val = normalizeAllergenUI(rawVal);
+
+  if (!allergenMaster.includes(val)) {
+    allergenMaster.push(val);
+  }
+
+  // 全フォームのアレルゲン欄を再描画（現在チェックされている状態を維持）
+  const count = parseInt(document.getElementById('qa-count').value, 10) || 1;
+  for (let i = 1; i <= count; i++) {
+    const c = document.getElementById(`qa-allergy-${i}`);
+    if (c) {
+      const checked = [...c.querySelectorAll('input:checked')].map(cb => normalizeAllergenUI(cb.value));
+      if (i === formIdx && !checked.includes(val)) {
+        checked.push(val);
+      }
+      renderAllergyEditor(checked, `qa-allergy-${i}`);
+    }
+  }
+
+  input.value = '';
 }
 
 function searchExistingUser(inputEl, formIdx) {
@@ -716,10 +854,11 @@ function searchExistingUser(inputEl, formIdx) {
       customInput.value = matched.region === "未登録" ? "" : matched.region;
     }
 
-    const cbs = document.querySelectorAll(`#qa-allergy-${formIdx} input`);
-    cbs.forEach(cb => {
-      cb.checked = matched.allergies.includes(cb.value);
+    const normUserAllergies = matched.allergies.map(normalizeAllergenUI);
+    normUserAllergies.forEach(a => {
+      if (!allergenMaster.includes(a)) allergenMaster.push(a);
     });
+    renderAllergyEditor(normUserAllergies, `qa-allergy-${formIdx}`);
   }
 }
 
@@ -736,14 +875,19 @@ async function submitAdd() {
     const customRegion = document.getElementById(`qa-pregion-custom-${i}`).value.trim();
     const finalRegion = (regionSelect === "その他") ? (customRegion || "その他") : regionSelect;
 
-    const checked = [...document.querySelectorAll(`#qa-allergy-${i} input:checked`)].map(cb => cb.value);
+    const rawChecked = [...document.querySelectorAll(`#qa-allergy-${i} input:checked`)].map(cb => cb.value);
+    const checked = [...new Set(rawChecked.map(normalizeAllergenUI))];
+
+    const hintVal = document.getElementById(`qa-hint-${i}`).value.trim();
+    const defaultHint = existingId ? "" : "初来店の組。";
+    const finalHint = hintVal || defaultHint;
 
     usersPayload.push({
       user_id: existingId,
       name: name,
       region: finalRegion,
       allergies: checked,
-      hint: existingId ? "" : "初来店の組。"
+      hint: finalHint
     });
   }
 
@@ -816,12 +960,12 @@ function renderLedger(kw = '') {
   const tbody = document.getElementById('lp-tbody');
   const lower = kw.toLowerCase().trim();
 
-  // タブに応じて通常顧客かごみ箱顧客かをフィルタ
   const isTrash = currentLedgerTab === 'trash';
   const list = Object.values(DB).filter(u => {
     if (isTrash ? !u.is_deleted : u.is_deleted) return false;
     if (!lower) return true;
-    return `${u.name} ${u.region} ${u.allergies.join(' ')} ${u.favs.join(' ')} ${u.hint}`.toLowerCase().includes(lower);
+    const algStr = u.allergies.map(normalizeAllergenUI).join(' ');
+    return `${u.name} ${u.region} ${algStr} ${u.favs.join(' ')} ${u.hint}`.toLowerCase().includes(lower);
   });
 
   if (isTrash) {
@@ -830,33 +974,39 @@ function renderLedger(kw = '') {
       tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;padding:24px;color:var(--text-dim);">ごみ箱は空です</td></tr>`;
       return;
     }
-    tbody.innerHTML = list.map(u => `
+    tbody.innerHTML = list.map(u => {
+      const uAlgs = [...new Set(u.allergies.map(normalizeAllergenUI))];
+      return `
       <tr>
         <td><strong>${u.name}</strong></td>
         <td>${u.region || '未登録'}</td>
         <td>${u.count || 1}回</td>
-        <td>${u.allergies.length ? u.allergies.map(a => `<span class="chip chip-red">${a}</span>`).join(' ') : '<span class="text-muted">なし</span>'}</td>
+        <td>${uAlgs.length ? uAlgs.map(a => `<span class="chip chip-red">${a}</span>`).join(' ') : '<span class="text-muted">なし</span>'}</td>
         <td>
           <button class="btn btn-secondary" style="padding:3px 8px;font-size:.72rem;margin-right:6px;" onclick="restoreUser('${u.id}')">↩️ 復元</button>
           <button class="btn btn-checkout" style="padding:3px 8px;font-size:.72rem;" onclick="purgeUser('${u.id}')">⚠️ 本当の削除</button>
         </td>
-      </tr>`).join('');
+      </tr>`;
+    }).join('');
   } else {
     thead.innerHTML = `<tr><th>氏名</th><th>地域</th><th>来店回数</th><th>好物・注文傾向</th><th>アレルゲン</th><th>最終来店</th><th>操作</th></tr>`;
     if (!list.length) {
       tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:24px;color:var(--text-dim);">該当する顧客は見つかりませんでした</td></tr>`;
       return;
     }
-    tbody.innerHTML = list.map(u => `
+    tbody.innerHTML = list.map(u => {
+      const uAlgs = [...new Set(u.allergies.map(normalizeAllergenUI))];
+      return `
       <tr class="row-click" onclick="openLedgerEdit('${u.id}')">
         <td><strong>${u.name}</strong></td>
         <td>${u.region || '未登録'}</td>
         <td>${u.count || 1}回</td>
         <td>${u.favs.length ? u.favs.map(f => `⭐${f}`).join('、') : '<span class="text-muted">なし</span>'}</td>
-        <td>${u.allergies.length ? u.allergies.map(a => `<span class="chip chip-red">${a}</span>`).join(' ') : '<span class="text-muted">なし</span>'}</td>
+        <td>${uAlgs.length ? uAlgs.map(a => `<span class="chip chip-red">${a}</span>`).join(' ') : '<span class="text-muted">なし</span>'}</td>
         <td>${u.last || '-'}</td>
         <td><button class="btn btn-secondary" style="padding:3px 8px;font-size:.72rem;" onclick="event.stopPropagation();openLedgerEdit('${u.id}')">編集</button></td>
-      </tr>`).join('');
+      </tr>`;
+    }).join('');
   }
 }
 
@@ -875,12 +1025,15 @@ async function saveLedger() {
   const customRegion = document.getElementById('lp-region-custom').value.trim();
   const finalRegion = (regionSelect === "その他") ? (customRegion || "その他") : regionSelect;
 
+  const rawAllergies = [...document.querySelectorAll('#lp-allergy input:checked')].map(cb => cb.value);
+  const normalizedAllergies = [...new Set(rawAllergies.map(normalizeAllergenUI))];
+
   const payload = {
     name: document.getElementById('lp-name-val').value.trim() || '無名のお客様',
     region: finalRegion,
     count: parseInt(document.getElementById('lp-count-val').value, 10) || 1,
     hint: document.getElementById('lp-hint').value.trim(),
-    allergies: [...document.querySelectorAll('#lp-allergy input:checked')].map(cb => cb.value),
+    allergies: normalizedAllergies,
     favs: [...currentEditingFavs]
   };
 

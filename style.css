@@ -247,6 +247,17 @@ body {
   box-shadow: 0 1px 4px rgba(0,0,0,0.06);
   transition: transform 0.15s, box-shadow 0.15s, border-color 0.15s;
 }
+.seat-card.is-billing {
+  border-color: var(--c-reserved);
+  background: var(--c-reserved-sub);
+  animation: pulseBilling 2s infinite;
+}
+
+@keyframes pulseBilling {
+  0% { box-shadow: 0 0 0 0 rgba(158, 87, 12, 0.4); }
+  70% { box-shadow: 0 0 0 6px rgba(158, 87, 12, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(158, 87, 12, 0); }
+}
 .seat-card:hover { transform: translateY(-2px); box-shadow: 0 4px 10px rgba(0,0,0,0.1); }
 .seat-card.active {
   border-color: var(--text-main);
@@ -374,7 +385,7 @@ body {
 }
 .fav-del-btn { background: none; border: none; color: #a81b1b; cursor: pointer; font-size: 0.85rem; font-weight: 900; padding: 0 2px; }
 
-/* モーダル */
+/* ── モーダル（正しい縦並び構造） ── */
 .modal-backdrop {
   display: none;
   position: fixed;
@@ -393,7 +404,7 @@ body {
   border-radius: var(--radius-lg);
   border: 1px solid var(--border-dark);
   display: flex;
-  flex-direction: column;
+  flex-direction: column; /* 上から下へ */
   overflow: hidden;
   box-shadow: 0 10px 25px rgba(0,0,0,0.2);
 }
@@ -438,8 +449,17 @@ body {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  flex-shrink: 0;
 }
-.modal-body { padding: 16px; overflow-y: auto; flex: 1; display: flex; flex-direction: column; gap: 14px; }
+.modal-body {
+  padding: 16px;
+  overflow-y: auto;
+  flex: 1;
+  display: flex;
+  flex-direction: column; /* 各セクションを縦積みに */
+  gap: 16px;
+  width: 100%;
+}
 .modal-footer {
   padding: 12px 18px;
   background: var(--surface-sub);
@@ -447,6 +467,7 @@ body {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+  flex-shrink: 0;
 }
 .section-title {
   font-size: 0.82rem;
@@ -454,7 +475,7 @@ body {
   color: var(--text-sub);
   border-bottom: 2px solid var(--border-main);
   padding-bottom: 4px;
-  margin-bottom: 6px;
+  margin-bottom: 8px;
 }
 
 .form-label { font-size: 0.72rem; font-weight: 800; color: var(--text-sub); display: block; margin-bottom: 2px; }
@@ -468,9 +489,9 @@ body {
   font-weight: 600;
   color: var(--text-main);
 }
-.er-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; }
-.er-item { background: var(--surface-sub); padding: 6px 10px; border-radius: var(--radius-sm); border: 1px solid var(--border-main); }
-.er-label { font-size: 0.7rem; font-weight: 700; color: var(--text-sub); }
+.er-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; width: 100%; }
+.er-item { background: var(--surface-sub); padding: 8px 10px; border-radius: var(--radius-sm); border: 1px solid var(--border-main); }
+.er-label { font-size: 0.7rem; font-weight: 700; color: var(--text-sub); margin-bottom: 4px; }
 
 .allergy-editor {
   display: flex;
@@ -480,9 +501,10 @@ body {
   border: 1px solid #f2bebe;
   padding: 8px;
   border-radius: var(--radius-sm);
+  width: 100%;
 }
 .allergy-label {
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: 4px;
   font-size: 0.75rem;
@@ -494,10 +516,21 @@ body {
   border: 1px solid #eaa2a2;
   cursor: pointer;
 }
-.custom-allergy-bar { display: flex; gap: 6px; margin-top: 6px; }
+.allergy-del-btn {
+  background: none;
+  border: none;
+  color: #a81b1b;
+  cursor: pointer;
+  font-size: 0.8rem;
+  font-weight: 900;
+  padding: 0 0 0 4px;
+  line-height: 1;
+}
+.allergy-del-btn:hover { color: #d32f2f; transform: scale(1.15); }
+.custom-allergy-bar { display: flex; gap: 6px; margin-top: 6px; width: 100%; }
 .custom-allergy-input { flex: 1; padding: 5px 8px; border: 1px solid #c8c0b2; border-radius: var(--radius-sm); font-size: 0.78rem; }
 
-.qa-forms-scroll { display: flex; flex-direction: column; gap: 12px; }
+.qa-forms-scroll { display: flex; flex-direction: column; gap: 12px; width: 100%; }
 .qa-person-card {
   background: var(--surface-sub);
   border: 1.5px solid var(--border-main);
@@ -506,6 +539,7 @@ body {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  width: 100%;
 }
 
 .tbl { width: 100%; border-collapse: collapse; font-size: 0.75rem; }
@@ -516,11 +550,11 @@ body {
 .tbl-ledger tr.row-click { cursor: pointer; }
 .tbl-ledger tr.row-click:hover { background: #ded8cb; }
 
-.ledger-page { display: flex; flex-direction: column; height: 100%; overflow: hidden; }
+.ledger-page { display: flex; flex-direction: column; height: 100%; overflow: hidden; width: 100%; }
 .ledger-search { width: 100%; padding: 8px 12px; border: 1.5px solid var(--border-dark); border-radius: var(--radius-sm); font-size: 0.85rem; }
 .ledger-table-wrap { flex: 1; overflow-y: auto; border: 1px solid var(--border-main); border-radius: var(--radius-sm); }
 
-/* カスタム確認ダイアログ（ポップアップ） */
+/* カスタム確認ダイアログ */
 .confirm-dialog-box {
   background: var(--surface);
   border: 2px solid var(--border-dark);
@@ -543,27 +577,9 @@ body {
   gap: 10px;
   border-bottom: 1.5px solid var(--border-main);
 }
-.confirm-dialog-header h4 {
-  font-size: 1rem;
-  font-weight: 900;
-  color: var(--text-main);
-}
-.confirm-dialog-body {
-  padding: 20px 18px;
-  font-size: 0.85rem;
-  font-weight: 600;
-  color: var(--text-main);
-  line-height: 1.5;
-  white-space: pre-wrap;
-}
-.confirm-dialog-footer {
-  padding: 12px 16px;
-  background: var(--surface-sub);
-  display: flex;
-  justify-content: flex-end;
-  gap: 10px;
-  border-top: 1px solid var(--border-main);
-}
+.confirm-dialog-header h4 { font-size: 1rem; font-weight: 900; color: var(--text-main); }
+.confirm-dialog-body { padding: 20px 18px; font-size: 0.85rem; font-weight: 600; color: var(--text-main); line-height: 1.5; white-space: pre-wrap; }
+.confirm-dialog-footer { padding: 12px 16px; background: var(--surface-sub); display: flex; justify-content: flex-end; gap: 10px; border-top: 1px solid var(--border-main); }
 
 .resizer {
   width: 8px;

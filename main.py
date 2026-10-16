@@ -20,6 +20,46 @@ app.add_middleware(
 
 DB_FILE = "restaurant.db"
 
+# 表記ゆれ辞書
+ALLERGEN_SYNONYMS = {
+    "エビ": "えび",
+    "海老": "えび",
+    "カニ": "かに",
+    "蟹": "かに",
+    "ソバ": "そば",
+    "蕎麦": "そば",
+    "コムギ": "小麦",
+    "たまご": "卵",
+    "タマゴ": "卵",
+    "玉子": "卵",
+    "鶏卵": "卵",
+    "乳製品": "乳",
+    "ミルク": "乳",
+    "牛乳": "乳",
+    "落花生": "落花生（ピーナッツ）",
+    "ピーナッツ": "落花生（ピーナッツ）",
+    "クルミ": "くるみ",
+    "胡桃": "くるみ",
+    "サケ": "さけ",
+    "鮭": "さけ",
+    "サーモン": "さけ",
+    "サバ": "さば",
+    "鯖": "さば",
+    "イカ": "いか",
+    "烏賊": "いか",
+    "アワビ": "あわび",
+    "鮑": "あわび",
+    "ゴマ": "ごま",
+    "胡麻": "ごま",
+    "ヤマイモ": "やまいも",
+    "山芋": "やまいも",
+    "キウイ": "キウイフルーツ",
+}
+
+def normalize_allergen(name: str) -> str:
+    cleaned = name.strip()
+    return ALLERGEN_SYNONYMS.get(cleaned, cleaned)
+
 def get_db():
     conn = sqlite3.connect(DB_FILE, timeout=15)
     conn.row_factory = sqlite3.Row
@@ -50,7 +90,7 @@ class AssignRequest(BaseModel):
     user_ids: List[str]
     session_id: str
 
-# 1. 顧客一覧の取得（ごみ箱内も is_deleted で判定して取得可能）
+# 1. 顧客一覧の取得
 @app.get("/api/users")
 def get_all_users():
     with get_db() as conn:
@@ -100,7 +140,10 @@ def get_floor_status():
     with get_db() as conn:
         active_sessions = conn.execute("""
             SELECT * FROM TableSession 
-            WHERE end_datetime IS NULL OR end_datetime = '利用中' OR end_datetime = '予約中'
+            WHERE end_datetime IS NULL 
+               OR end_datetime = '利用中' 
+               OR end_datetime = '会計中' 
+               OR end_datetime = '予約中'
         """).fetchall()
 
         tables_data = {}
@@ -108,6 +151,7 @@ def get_floor_status():
             tables_data[i] = {
                 "sessionId": None,
                 "type": "empty",
+                "status": "empty",
                 "stayTime": None,
                 "guestCount": 0,
                 "userIds": [],
@@ -132,14 +176,23 @@ def get_floor_status():
             summary_text = conv["memory_content"] if conv else ""
 
             is_reserved = (s["end_datetime"] == "予約中")
+            is_billing = (s["end_datetime"] == "会計中")
             is_speaking = bool(s["conversation_status"])
 
-            s_type = "reserved" if is_reserved else ("speaking" if is_speaking else "active")
+            if is_reserved:
+                s_type = "reserved"
+            elif is_billing:
+                s_type = "billing"
+            elif is_speaking:
+                s_type = "speaking"
+            else:
+                s_type = "active"
 
             tables_data[t_id] = {
                 "sessionId": s["id"],
                 "type": s_type,
-                "stayTime": "利用中" if not is_reserved else None,
+                "status": s["end_datetime"] or "利用中",
+                "stayTime": s["end_datetime"] if not is_reserved else None,
                 "reserveTime": s["start_datetime"] if is_reserved else None,
                 "guestCount": max(len(u_ids), 1),
                 "userIds": u_ids,
@@ -149,7 +202,7 @@ def get_floor_status():
 
         return tables_data
 
-# 3. 新規受付
+# 3. 新規グループ受付（アレルゲンの自動正規化）
 @app.post("/api/register-group")
 def register_group(req: GroupRegisterRequest):
     created_user_ids = []
@@ -172,7 +225,8 @@ def register_group(req: GroupRegisterRequest):
                     VALUES (?, ?, ?, ?, ?, 0)
                 """, (uid, u.name, u.region, now_str, now_str))
 
-                for alg_name in u.allergies:
+                normalized_algs = list(dict.fromkeys([normalize_allergen(a) for a in u.allergies if a.strip()]))
+                for alg_name in normalized_algs:
                     row = conn.execute("SELECT id FROM Allergy WHERE name = ?", (alg_name,)).fetchone()
                     if row:
                         alg_id = row["id"]
@@ -193,14 +247,16 @@ def register_group(req: GroupRegisterRequest):
 
     return {"status": "success", "user_ids": created_user_ids}
 
-# 4. カルテ更新
+# 4. カルテ更新（アレルゲンの正規化＆重複防止）
 @app.put("/api/users/{user_id}")
 def update_user_profile(user_id: str, req: UserUpdateRequest):
     with get_db() as conn:
         conn.execute("UPDATE UserData SET name = ?, region = ? WHERE id = ?", (req.name, req.region, user_id))
 
+        # アレルギー更新
         conn.execute("DELETE FROM UserAllergy WHERE user_id = ?", (user_id,))
-        for alg_name in req.allergies:
+        normalized_algs = list(dict.fromkeys([normalize_allergen(a) for a in req.allergies if a.strip()]))
+        for alg_name in normalized_algs:
             row = conn.execute("SELECT id FROM Allergy WHERE name = ?", (alg_name,)).fetchone()
             if row:
                 alg_id = row["id"]
@@ -210,13 +266,17 @@ def update_user_profile(user_id: str, req: UserUpdateRequest):
             conn.execute("INSERT OR IGNORE INTO UserAllergy (user_id, allergy_id, info_date) VALUES (?, ?, date('now'))",
                          (user_id, alg_id))
 
+        # 好物更新
         conn.execute("DELETE FROM UserMenuPreference WHERE user_id = ?", (user_id,))
         for fav_name in req.favs:
-            row = conn.execute("SELECT id FROM Menu WHERE name = ?", (fav_name,)).fetchone()
+            clean_fav = fav_name.strip()
+            if not clean_fav:
+                continue
+            row = conn.execute("SELECT id FROM Menu WHERE name = ?", (clean_fav,)).fetchone()
             if row:
                 menu_id = row["id"]
             else:
-                cur = conn.execute("INSERT INTO Menu (name, price) VALUES (?, 1000)", (fav_name,))
+                cur = conn.execute("INSERT INTO Menu (name, price) VALUES (?, 0)", (clean_fav,))
                 menu_id = cur.lastrowid
             conn.execute("INSERT OR IGNORE INTO UserMenuPreference (user_id, menu_id) VALUES (?, ?)",
                          (user_id, menu_id))
@@ -246,7 +306,7 @@ def restore_user(user_id: str):
         conn.commit()
     return {"status": "restored", "user_id": user_id}
 
-# 7. 本当の削除（物理削除：DBから完全消去）
+# 7. 本当の削除（物理削除）
 @app.delete("/api/users/{user_id}/purge")
 def purge_user(user_id: str):
     with get_db() as conn:
@@ -270,7 +330,15 @@ def assign_session(req: AssignRequest):
         conn.commit()
     return {"status": "assigned"}
 
-# 9. 会計・退店処理
+# 9. 会計処理
+@app.post("/api/sessions/{session_id}/bill")
+def bill_session(session_id: str):
+    with get_db() as conn:
+        conn.execute("UPDATE TableSession SET end_datetime = '会計中' WHERE id = ?", (session_id,))
+        conn.commit()
+    return {"status": "billing"}
+
+# 10. 退店処理
 @app.post("/api/sessions/{session_id}/checkout")
 def checkout_session(session_id: str):
     now = datetime.now().strftime("%H:%M 退店")
@@ -279,7 +347,6 @@ def checkout_session(session_id: str):
         conn.commit()
     return {"status": "checked_out"}
 
-# ── 静的配信 ──
 @app.get("/")
 def serve_index():
     return FileResponse("index.html")
