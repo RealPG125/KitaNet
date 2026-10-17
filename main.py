@@ -7,7 +7,7 @@ import os
 import kitanet_helper
 import asyncio
 import torch
-import json
+import re
 
 # import websocket
 from faster_whisper import WhisperModel
@@ -24,7 +24,7 @@ from datetime import datetime
 
 MAX_BUFFER_DURATION = 20
 SILENCE_THRESHOLD = 0.05
-LLM_TRIGGER_SILENCE_DURATION = 2.0
+LLM_TRIGGER_SILENCE_DURATION = 1.0
 
 class WhisperObject:
     models = ["tiny", "base", "small", "medium", "large-v3"]
@@ -384,6 +384,14 @@ class TTS:
             self._voiceModel = voiceModel
 
     def invoke_speak(self, text, language: str = "en", speakerInstance: Speaker | None = None):
+        for sentence in text:
+            voice = self.generate_voice(text = sentence, language = language)
+            if speakerInstance == None: 
+                asyncio.create_task(self._speaker.async_play(audioData, sourceSampleRate = 24000, sourceChannels = 1))
+            else:
+                asyncio.create_task(speakerInstance.async_play(audioData, sourceSampleRate = 24000, sourceChannels = 1))
+
+    def generate_voice(self, text, language: str = "en"):
         if (self.mode == "edge"):
             voiceModel = (TTS.edgeTTSLanguageVoiceDict[language] if language in TTS.edgeTTSLanguageVoiceDict else TTS.edgeTTSLanguageVoiceDict["en"]) if self._voiceModel == "auto" else self._voiceModel
             communicator = self._edgeTTS.Communicate(text, voiceModel)
@@ -397,24 +405,13 @@ class TTS:
             audioData = np.array(AudioSegment.from_mp3(BytesIO(audioData)).get_array_of_samples())
             audioData = audioData.astype(np.float32) / np.iinfo(np.int16).max
 
-            if speakerInstance == None: 
-                self._speaker.play(audioData, sourceSampleRate = 24000, sourceChannels = 1)
-            else:
-                speakerInstance.play(audioData, sourceSampleRate = 24000, sourceChannels = 1)
-
         elif (self.mode == "kokoro"):
-            text = text.split(".")
             language = language if language in TTS.kokoroTTSLanguageVoiceDict else "en"
-            generator = self._kokoroTTSAggregate[language](text = text, voice = TTS.kokoroTTSLanguageVoiceDict[language], split_pattern = r'[.!?\n]+')
+            for sentence in text:
+                generator = self._kokoroTTSAggregate[language](text = text, voice = TTS.kokoroTTSLanguageVoiceDict[language], split_pattern = r'[.。!！？?\n]+')
 
-            audioData = np.array([], dtype = np.float32)
-
-            for i, (gs, ps, audio) in enumerate(generator):
-                audioData = audio.cpu().numpy()
-                if speakerInstance == None: 
-                    asyncio.create_task(self._speaker.async_play(audioData, sourceSampleRate = 24000, sourceChannels = 1))
-                else:
-                    asyncio.create_task(speakerInstance.async_play(audioData, sourceSampleRate = 24000, sourceChannels = 1))
+                for i, (gs, ps, audio) in enumerate(generator):
+                    audioData = audio.cpu().numpy()
 
         elif (self.mode == "pykokoro"):
             language = language if language in TTS.kokoroTTSLanguageVoiceDict else "en"
@@ -423,10 +420,8 @@ class TTS:
 
             audioData = rendered.audio.astype(np.float32)
 
-            if speakerInstance == None: 
-                asyncio.create_task(self._speaker.async_play(audioData, sourceSampleRate = 24000, sourceChannels = 1))
-            else:
-                asyncio.create_task(speakerInstance.async_play(audioData, sourceSampleRate = 24000, sourceChannels = 1))
+        return audioData
+
         
     def stop_audio(self):
         try:
@@ -479,6 +474,8 @@ class LLM:
             compiledMessages.append({"role": "assistant", "content": item["response"]})
         compiledMessages.append({"role": "user", "content": message})
 
+        print(compiledMessages)
+
         self.response = self.ollama.chat(model = self.model, messages = compiledMessages) if message != None else "Empty input message"
         return self.response
 
@@ -492,8 +489,11 @@ class LLM:
             return ""
         else:
             response = await self.get_text_response(message = message, memory = memory)
+            response = re.split(r'[.!?\n]+', response)
             self.tts.invoke_speak(text = response, language = language, speakerInstance = speakerInstance)
             return response
+
+    # async def chat_get_audio(self, message: str | None = None, language: str = "en", memory: list[dict[str, str]] = []):
 
     def stop_audio(self):
         self.tts.stop_audio()
@@ -529,26 +529,29 @@ class TableResponder:
 
     # CALL ONLY FOR AUDIO LOOP, no diarization implementation for now
     async def loop_frame_audio(self):
-        self.audioPeakAmplitude = self._transcriber.mic.peakAmplitude
+        while True:
+            self.audioPeakAmplitude = self._transcriber.mic.peakAmplitude
 
-        self.process_transcription_preview()
-        if (self.spoken):
-            self.silentTime += time.perf_counter() - self.startTime
-        self.startTime = time.perf_counter()
+            self.process_transcription_preview()
+            if (self.spoken):
+                self.silentTime += time.perf_counter() - self.startTime
+            self.startTime = time.perf_counter()
 
-        if (self.audioPeakAmplitude > self.SILENCE_THRESHOLD):
-            self.silentTime = 0.0
-            self.spoken = True
+            if (self.audioPeakAmplitude > self.SILENCE_THRESHOLD):
+                self.silentTime = 0.0
+                self.spoken = True
 
-        if ((self.silentTime > self.llmTriggerSilenceDuration) and self.spoken):
-            self._transcriber.mic.ready = False
-            message = self._transcriber.transcribeTextNoncontextual
-            response = await self._LLMInstance.audio_chat(message = message, language = self._transcriber.languageNoncontextual, speakerInstance = self._speaker, memory = self._memory)
-            self._add_memory(message = message, response = response)
-            self._transcriber.flush_buffer()
-            self._transcriber.mic.ready = True
-            self.silentTime = 0.0
-            self.spoken = False
+            if ((self.silentTime > self.llmTriggerSilenceDuration) and self.spoken):
+                self._transcriber.mic.ready = False
+                message = self._transcriber.transcribeTextNoncontextual
+                response = await self._LLMInstance.audio_chat(message = message, language = self._transcriber.languageNoncontextual, speakerInstance = self._speaker, memory = self._memory)
+                self._add_memory(message = message, response = response)
+                self._transcriber.flush_buffer()
+                self._transcriber.mic.ready = True
+                self.silentTime = 0.0
+                self.spoken = False
+
+            await asyncio.sleep(0.05)
 
     def print_state(self):
         print(f"[{self._transcriber.mic.peakAmplitude:.5f}] [{self.silentTime:.5f}s {self.spoken}] {self._transcriber.transcribeTextNoncontextual:.40} | {(self._LLMInstance.response["message"]["content"] if self._LLMInstance.response != None else ""):.40}\033[K")
@@ -588,9 +591,11 @@ async def main():
 
         await llm.get_text_response(message = "")
 
+        for table in tables:
+            asyncio.create_task(table.loop_frame_audio())
+
         while True:
             for table in tables:
-                await table.loop_frame_audio()
                 table.print_state()
             print(f"\033[{len(tables)}A\r", end = "")
             await asyncio.sleep(0.05)
