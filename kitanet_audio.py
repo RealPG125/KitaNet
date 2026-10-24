@@ -23,7 +23,7 @@ class Mic:
     # INIT RTC BEFORE START
     stemIndexDict = ["drums", "bass", "other", "vocals"]
 
-    def __init__(self, sampleRate: int | None = None, deviceIndex: int | None = None, chunkDuration: int | float = 0.5, flatten: bool = True, denoise: bool = True, manual: bool = False, useRTC: bool = False):
+    def __init__(self, sampleRate: int | None = None, deviceIndex: int | None = None, chunkDuration: int | float = 0.5, flatten: bool = True, denoise: bool = True, manual: bool = False, useRTC: bool = False, stem: bool = False):
         self._pa = pyaudio.PyAudio() if not useRTC else None
         self._RTCInstance = None
         self.queue = queue.Queue()
@@ -36,7 +36,7 @@ class Mic:
         if (manual and not useRTC):
             self.start_manual_on_device()
         elif (not useRTC):
-            self.start_on_device(sampleRate = sampleRate, deviceIndex = deviceIndex, chunkDuration = chunkDuration, flatten = flatten, denoise = denoise)
+            self.start_on_device(sampleRate = sampleRate, deviceIndex = deviceIndex, chunkDuration = chunkDuration, flatten = flatten, denoise = denoise, stem = stem)
         self.ready = False
 
     def start_on_device(self, sampleRate: int | None = None, deviceIndex: int | None = None, chunkDuration: int | float = 0.5, flatten: bool = True, denoise: bool = True, stem: bool = False):
@@ -78,16 +78,31 @@ class Mic:
         
         autoconfigFlag = False
 
-        # await self._RTCInstance.drain_queue_to_storage(channelName = "control")
+        # this config is done in initialization hence doesnt need thorough checking
+        if (len(self._RTCInstance.storage["control"]) == 0):
+            while (not self._RTCInstance.queue_has_item(channelName = "control")):
+                await asyncio.sleep(0.1)
 
-        # for item in self._RTCInstance.storage["control"]:
-        #     configItem = json.loads(item)
-        #     try:
-        #         self.sampleRate = int(configItem["MICSAMPLERATE"])
-        #         self.channels = int(configItem["MICCHANNELS"])
-        #         autoconfigFlag = True
-        #     except KeyError:
-        #         pass
+            await self._RTCInstance.drain_queue_to_storage(channelName = "control")
+
+        for item in self._RTCInstance.storage["control"]:
+            if (item[:6] == "CONFIG"):
+                configItem = json.loads(item[7:])
+                print(f"JSON {configItem}")
+                try:
+                    self.channels = int(configItem["MICCHANNELS"])
+                    print(f"set mic channels as {self.channels}")
+                    autoconfigFlag = True
+                except Exception as e:
+                    print(e)
+                    pass
+                try:
+                    self.sampleRate = int(configItem["MICSAMPLERATE"])
+                    print(f"set mic sample rate as {self.sampleRate}")
+                    autoconfigFlag = True
+                except Exception as e:
+                    print(e)
+                    pass
 
         if (manual and not autoconfigFlag):
             self.sampleRate = input(f"Sample rate (enter to use default value 44100): ")
@@ -234,15 +249,17 @@ class Mic:
             
     def stop(self):
         self._running = False
-        self._stream.stop_stream()
-        self._stream.close()
-        self._pa.terminate()
+        if (self._pa != None):
+            self._stream.stop_stream()
+            self._stream.close()
+            self._pa.terminate()
         print(f"Mic {self.deviceIndex}: successfully stopped")
 
 class Speaker:
     def __init__(self, sampleRate: int | None = None, deviceIndex: int | None = None, manual: bool = False, useRTC: bool = False):
         self._pa = pyaudio.PyAudio() if not useRTC else None
         self._RTCInstance = None
+        self.useRTC = useRTC
         self._devices = {
             index: self._pa.get_device_info_by_index(index) for index in range(self._pa.get_device_count())
             if self._pa.get_device_info_by_index(index)["maxOutputChannels"] > 0
@@ -295,16 +312,27 @@ class Speaker:
         
         autoconfigFlag = False
 
-        # await self._RTCInstance.drain_queue_to_storage(channelName = "control")
+        # this config is done in initialization hence doesnt need thorough checking
+        if (len(self._RTCInstance.storage["control"]) == 0):
+            while (not self._RTCInstance.queue_has_item(channelName = "control")):
+                await asyncio.sleep(0.1)
 
-        # for item in self._RTCInstance.storage["control"]:
-        #     configItem = json.loads(item)
-        #     try:
-        #         self.sampleRate = int(configItem["SPEAKERSAMPLERATE"])
-        #         self.channels = int(configItem["SPEAKERCHANNELS"])
-        #         autoconfigFlag = True
-        #     except KeyError:
-        #         pass
+            await self._RTCInstance.drain_queue_to_storage(channelName = "control")
+
+        for item in self._RTCInstance.storage["control"]:
+            if (item[:6] == "CONFIG"):
+                configItem = json.loads(item[7:])
+                print(configItem)
+                try:
+                    self.sampleRate = int(configItem["SPEAKERSAMPLERATE"])
+                    autoconfigFlag = True
+                except Exception as e:
+                    print(e)
+                try:
+                    self.channels = int(configItem["SPEAKERCHANNELS"])
+                    autoconfigFlag = True
+                except Exception as e:
+                    print(e)
 
         if (manual and not autoconfigFlag):
             self.sampleRate = input(f"Sample rate (enter to use default value 48000): ")
@@ -330,19 +358,20 @@ class Speaker:
             self._RTCInstance.send_data("audio", audioSample.tobytes())
 
     async def async_play(self, audioSample, sourceSampleRate: int | None = None, sourceChannels: int | None = None):
-            if (sourceSampleRate != None):
-                if (sourceSampleRate != self.sampleRate):
-                    audioSample = resample_poly(audioSample, self.sampleRate, sourceSampleRate)
-            if (sourceChannels != None):
-                if (sourceChannels != self.channels):
-                    audioSample = audioSample.reshape(-1, sourceChannels).mean(axis = 1)
-                    audioSample = np.repeat(audioSample[:, np.newaxis], self.channels, axis = 1).ravel()
-            if (self._pa != None):
-                # print(f"source {sourceSampleRate}/{sourceChannels} | device {self.sampleRate}/{self.channels}")
-                # print(f"writing to stream with peak level of {np.max(np.abs(audioSample))}")
-                self._stream.write(audioSample.tobytes())
-            elif (self._RTCInstance != None):
-                self._RTCInstance.send_data("audio", audioSample.tobytes())
+        if (sourceSampleRate != None):
+            if (sourceSampleRate != self.sampleRate):
+                audioSample = resample_poly(audioSample, self.sampleRate, sourceSampleRate)
+        if (sourceChannels != None):
+            if (sourceChannels != self.channels):
+                audioSample = audioSample.reshape(-1, sourceChannels).mean(axis = 1)
+                audioSample = np.repeat(audioSample[:, np.newaxis], self.channels, axis = 1).ravel()
+        if (self._pa != None):
+            # print(f"source {sourceSampleRate}/{sourceChannels} | device {self.sampleRate}/{self.channels}")
+            # print(f"writing to stream with peak level of {np.max(np.abs(audioSample))}")
+            self._stream.write(audioSample.tobytes())
+        elif (self._RTCInstance != None):
+            self._RTCInstance.send_data("audio", audioSample.tobytes())
+        print("async play finished")
 
     def restart(self):
         try:

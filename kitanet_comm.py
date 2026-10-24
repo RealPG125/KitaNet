@@ -25,15 +25,17 @@ class RTCInstance:
     instanceNumber = 1
     config = {"iceServers": [{"urls": "stun:stun.1.google.com:19302"}]}
 
-    def __init__(self, debug: bool = False, useSTUN: bool = False):
+    def __init__(self, debug: bool = False, useSTUN: bool = False, ip: str = "127.0.0.1", port: int = 55555):
         self.enableDebug = debug
         self._pc = RTCPeerConnection() if not useSTUN else RTCPeerConnection(configuration = RTCInstance.config)
         self._channels: list[RTCDataChannel] = []
+        self._ip: str = ip
+        self._port: int = port
         self.instanceID: int = RTCInstance.instanceNumber
         self._useSTUN: bool = useSTUN
         self.queues: dict[str, queue.Queue[Any]] = {}
         self.storage: dict[str, list[Any]] = {}
-        self._states: dict[str, str] = {"connectionstate": "none", "iceconnectionstate": "none", "icegatheringstate": "none", "signalingstate": "none"}
+        self.states: dict[str, str] = {"connectionstate": "none", "iceconnectionstate": "none", "icegatheringstate": "none", "signalingstate": "none"}
         self._offer = None
         self._answer = None
         self.configured = False
@@ -56,39 +58,43 @@ class RTCInstance:
                 if (self.enableDebug): print(f"CommsPort instance {self.instanceID} autoconfig: Answer received")
                 await self.set_remote_dict(json.loads(message[6:]))
     
-    async def init_auto_config(self, offer: bool = True, channels = None, stackData: bool = False):
+    async def init_auto_config(self, offer: bool = True, manual: bool = False, channels = None, stackData: bool = False, ip: str | None = None, port: int | None = None):
         if (channels == None):
             channels = ["text"]
 
         if (offer):
-            ip = get_ip()
-            ipList: list[str] = []
-            print("IP addresses:")
-            for key, value in ip.items():
-                print(f"{key:35} | {value}")
-                ipList.append(value.split("/")[0])
-            while True:
-                serverAddress = input("Input IP address for server: ")
-                if (serverAddress == ""):
-                    serverAddress = "127.0.0.1"
-                    print("Using default address localhost 127.0.0.1")
-                    break
-                elif (serverAddress) in ipList:
-                    break
-                else:
-                    print("Invalid IP address")
-            while True:
-                serverPort = input("Input port for server (enter to use default value 55555): ")
-                if (serverPort == ""):
-                    serverPort = 55555
-                    print("Using default value: 55555")
-                    break
-                elif (returnTuple := kitanet_helper.succeeds(int, serverPort))[0]:
-                    if (0 <= returnTuple[1] <= 65535):
-                        serverPort = returnTuple[1]
+            if (manual):
+                ip = get_ip()
+                ipList: list[str] = []
+                print("IP addresses:")
+                for key, value in ip.items():
+                    print(f"{key:35} | {value}")
+                    ipList.append(value.split("/")[0])
+                while True:
+                    serverAddress = input("Input IP address for server: ")
+                    if (serverAddress == ""):
+                        serverAddress = "127.0.0.1"
+                        print("Using default address localhost 127.0.0.1")
+                        break
+                    elif (serverAddress) in ipList:
                         break
                     else:
-                        print("Value is outside of port range (0~65535)")
+                        print("Invalid IP address")
+                while True:
+                    serverPort = input("Input port for server (enter to use default value 55555): ")
+                    if (serverPort == ""):
+                        serverPort = 55555
+                        print("Using default value: 55555")
+                        break
+                    elif (returnTuple := kitanet_helper.succeeds(int, serverPort))[0]:
+                        if (0 <= returnTuple[1] <= 65535):
+                            serverPort = returnTuple[1]
+                            break
+                        else:
+                            print("Value is outside of port range (0~65535)")
+            else:
+                serverAddress = ip if ip != None else self._ip
+                serverPort = port if port != None else self._port
 
             for channel in channels:
                 self.create_channel(channelName = channel, stackToQueue = stackData)
@@ -109,22 +115,27 @@ class RTCInstance:
         else:
             for channelName in channels:
                 self.queues[channelName] = queue.Queue()
-            serverAddress = input("Input server IP address: ")
-            if (serverAddress == ""):
-                serverAddress = "127.0.0.1"
-                print("Using default address localhost 127.0.0.1")
-            while True:
-                serverPort = input("Input server port (enter to use default value 55555): ")
-                if (serverPort == ""):
-                    serverPort = 55555
-                    print("Using default value: 55555")
-                    break
-                elif (returnTuple := kitanet_helper.succeeds(int, serverPort))[0]:
-                    if (0 <= returnTuple[1] <= 65535):
-                        serverPort = returnTuple[1]
+
+            if (manual):
+                serverAddress = input("Input server IP address: ")
+                if (serverAddress == ""):
+                    serverAddress = "127.0.0.1"
+                    print("Using default address localhost 127.0.0.1")
+                while True:
+                    serverPort = input("Input server port (enter to use default value 55555): ")
+                    if (serverPort == ""):
+                        serverPort = 55555
+                        print("Using default value: 55555")
                         break
-                    else:
-                        print("Value is outside of port range (0~65535)")
+                    elif (returnTuple := kitanet_helper.succeeds(int, serverPort))[0]:
+                        if (0 <= returnTuple[1] <= 65535):
+                            serverPort = returnTuple[1]
+                            break
+                        else:
+                            print("Value is outside of port range (0~65535)")
+            else:
+                serverAddress = ip if ip != None else self._ip
+                serverPort = port if port != None else self._port
 
             uri = f"ws://{serverAddress}:{serverPort}/"
 
@@ -164,22 +175,22 @@ class RTCInstance:
             
     def connection_state_change(self):
         state = self._pc.connectionState
-        self._states["connectionstate"] = state
+        self.states["connectionstate"] = state
         if (self.enableDebug): print(f"CommsPort instance {self.instanceID}: Connection state {state}")
 
     def ice_connection_state_change(self):
         state = self._pc.iceConnectionState
-        self._states["iceconnectionstate"] = state
+        self.states["iceconnectionstate"] = state
         if (self.enableDebug): print(f"CommsPort instance {self.instanceID}: ICE connection state {state}")
 
     def ice_gathering_state_change(self):
         state = self._pc.iceGatheringState
-        self._states["icegatheringstate"] = state
+        self.states["icegatheringstate"] = state
         if (self.enableDebug): print(f"CommsPort instance {self.instanceID}: ICE gathering state {state}")
 
     def signaling_state_change(self):
         state = self._pc.signalingState
-        self._states["signalingstate"] = state
+        self.states["signalingstate"] = state
         if (self.enableDebug): print(f"CommsPort instance {self.instanceID}: Signaling state {state}")
 
     async def create_offer(self):
@@ -212,11 +223,12 @@ class RTCInstance:
             if (self.enableDebug): print(f"CommsPort instance {self.instanceID}: Channel name is empty, aborting channel creation")
             return None
 
-    def _register_channel(self, channel: RTCDataChannel, stackToQueue: bool = False):
+    def _register_channel(self, channel: RTCDataChannel, stackToQueue: bool = True):
         self._channels.append(channel)
         self.storage[channel.label] = []
         if (stackToQueue):
             self.queues[channel.label] = queue.Queue()
+            if (self.enableDebug): print(f"CommsPort instance {self.instanceID}: Created queue for channel {channel.label}")
         channel.on("open", lambda: self.on_channel_open(channel = channel))
         channel.on("message", lambda message: self.on_message(channel = channel, message = message))
         channel.on("close", lambda: self.on_channel_close(channel = channel))
@@ -246,18 +258,19 @@ class RTCInstance:
                 if (self.enableDebug): print(f"CommsPort instance {self.instanceID}: Sent data {str(data):.40}...")
                 break
 
-    def get_queue(self, channelName: str):
-        return self.queues[channelName].get()
+    def get_queue(self, channelName: str, block: bool = False):
+        if (self.enableDebug): print(f"CommsPort instance {self.instanceID}: Getting queue item from channel {channelName}")
+        return self.queues[channelName].get(block = block, timeout = 5)
 
     def queue_has_item(self, channelName: str) -> bool:
         return not self.queues[channelName].empty()
 
     def get_state(self, stateName: str):
-        return self._states[stateName]
+        return self.states[stateName]
 
-    async def drain_queue_to_storage(self, channelName: str, eofString: str = "EOF"):
-        while ((item := self.get_queue(channelName)) != eofString):
-            # print(f"DRAINING {item}")
+    async def drain_queue_to_storage(self, channelName: str, eofString: str = "EOF", block: bool = True):
+        while ((item := self.get_queue(channelName = channelName, block = block)) != eofString):
+            if (self.enableDebug): print(f"CommsPort instance {self.instanceID}: Draining item {item}")
             self.storage[channelName].append(item)
             
 async def main():

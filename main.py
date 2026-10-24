@@ -15,9 +15,11 @@ from scipy.signal import resample_poly
 from io import BytesIO
 from pydub import AudioSegment
 from kitanet_audio import Mic, Speaker
-from kitanet_comm import RTCInstance
+from kitanet_comm import RTCInstance, get_ip
 from pykokoro import GenerationConfig, KokoroSynthesizer, SynthesisConfig
 from datetime import datetime
+from websockets.asyncio.server import serve, ServerConnection
+# from websockets.asyncio.client import ClientConnection
 
 # model     : 軽 → 重: "tiny" (75MB), "base" (142MB), "small" (466MB), "medium" (1.5GB), "large-v3" (3.0GB)
 # device    : "cpu", Nvidia GPU: "cuda"
@@ -118,7 +120,7 @@ class Transcriber:
     transcriberID = 0
     transcriptionLock: asyncio.Lock | None = None
 
-    def __init__(self, name: str | None = None, whisperObject: WhisperObject | None = None, enablePlayback: bool = False, beamSize: int = 1, filter: bool = True, useContextual: str | int = 1, splitParts: bool = False, manual: bool = True, diarization: bool = False, useRTC: bool = False, rtcInstance: RTCInstance | None = None):
+    def __init__(self, name: str | None = None, whisperObject: WhisperObject | None = None, enablePlayback: bool = False, beamSize: int = 1, filter: bool = True, useContextual: str | int = 1, splitParts: bool = False, manual: bool = True, diarization: bool = False, useRTC: bool = False, rtcInstance: RTCInstance | None = None, speakerDeviceIndex: int | None = None, speakerSampleRate: int | None = None, micSampleRate: int | None = None, micDeviceIndex: int | None = None, micChunkDuration: int | float = 0.5, micFlatten: bool = True, micDenoise: bool = True, micStem: bool = False):
         if (whisperObject == None):
             raise ValueError("Error: whisperObject cannot be empty")
         self.name = name if name != None else f"Transcriber{Transcriber.transcriberID}"
@@ -215,9 +217,9 @@ class Transcriber:
                         splitParts = splitParts.lower() == "true"
                         break
 
-        self.mic = Mic(manual = manual, useRTC = useRTC)
+        self.mic = Mic(manual = manual, useRTC = useRTC, sampleRate = micSampleRate, deviceIndex = micDeviceIndex, chunkDuration = micChunkDuration, flatten = micFlatten, denoise = micDenoise, stem = micStem)
         self.useRTC: bool = useRTC
-        self._speaker = Speaker(manual = manual) if enablePlayback else None
+        self._speaker = Speaker(manual = manual, deviceIndex = speakerDeviceIndex, sampleRate = speakerSampleRate) if enablePlayback else None
         self._RTCInstance = rtcInstance if rtcInstance != None else RTCInstance(debug = True) if useRTC else None
         self._model: WhisperObject = whisperObject
         self._diarizationTool = DiarizationTool() if diarization else None
@@ -234,6 +236,9 @@ class Transcriber:
         self._buffer = np.empty(0, dtype = np.float32)
         self._queuePlayback = queue.Queue()
         self.contextualMode = [useContextual in [1, 2], useContextual in [0, 2]]
+        self.started = False
+        self.closed = False
+        self.pauseTranscribe = False
 
         self.task = asyncio.create_task(self._loop())
         if (self._speaker != None):
@@ -248,6 +253,10 @@ class Transcriber:
 
     async def _loop(self):
         while True:
+            if (self._RTCInstance.states["connectionstate"] == "closed" and self.started):
+                self.close()
+                break
+
             if (self.mic.queue.empty()):
                 await asyncio.sleep(0.01)
                 continue
@@ -257,6 +266,8 @@ class Transcriber:
                 self._queuePlayback.put(audioSlice)
                 self._buffer = np.concatenate((self._buffer, resample_poly(audioSlice, 16000, self.mic.sampleRate)))
 
+            self.started = True
+
             if (len(self._buffer) > 16000 * MAX_BUFFER_DURATION):
                 # with wave.open("test.wav", "wb") as wf:
                 #     wf.setnchannels(1)
@@ -265,17 +276,18 @@ class Transcriber:
                 #     wf.writeframes((self._buffer * 32767).astype(np.int16).tobytes())
                 self._buffer = self._buffer[-MAX_BUFFER_DURATION * 16000:]
 
-            if (self.contextualMode[0]):
-                async with Transcriber.get_lock():
-                    timeTranscribeStart = time.perf_counter()
-                    self.transcribeText, self.language = await asyncio.to_thread(self._model.transcribe_to_text, self._buffer, True, self._beamSize, self._filter, self._splitParts)
-                    self.timeToTranscribe = time.perf_counter() - timeTranscribeStart
+            if (not self.pauseTranscribe):
+                if (self.contextualMode[0]):
+                    async with Transcriber.get_lock():
+                        timeTranscribeStart = time.perf_counter()
+                        self.transcribeText, self.language = await asyncio.to_thread(self._model.transcribe_to_text, self._buffer, True, self._beamSize, self._filter, self._splitParts)
+                        self.timeToTranscribe = time.perf_counter() - timeTranscribeStart
 
-            if (self.contextualMode[1]):
-                async with Transcriber.get_lock():
-                    timeTranscribeStart = time.perf_counter()
-                    self.transcribeTextNoncontextual, self.languageNoncontextual = await asyncio.to_thread(self._model.transcribe_to_text, self._buffer, False, self._beamSize, self._filter, self._splitParts)
-                    self.timeToTranscribe = time.perf_counter() - timeTranscribeStart
+                if (self.contextualMode[1]):
+                    async with Transcriber.get_lock():
+                        timeTranscribeStart = time.perf_counter()
+                        self.transcribeTextNoncontextual, self.languageNoncontextual = await asyncio.to_thread(self._model.transcribe_to_text, self._buffer, False, self._beamSize, self._filter, self._splitParts)
+                        self.timeToTranscribe = time.perf_counter() - timeTranscribeStart
 
     def _playback(self):
         while True:
@@ -311,6 +323,7 @@ class Transcriber:
         self._buffer = np.empty(0, dtype = np.float32)
 
     def close(self):
+        self.closed = True
         self.task.cancel()
         if self.enableDiarization:
             self.taskDiarization.cancel()
@@ -384,10 +397,15 @@ class TTS:
             self._voiceModel = voiceModel
 
     def invoke_speak(self, text, language: str = "en", speakerInstance: Speaker | None = None):
-        for sentence in text:
-            voice = self.generate_voice(text = sentence, language = language)
-            if speakerInstance == None: 
+        audioData = self.generate_voice(text = text, language = language)
+        if (speakerInstance == None):
+            if (self._speaker.useRTC):
+                self._speaker.play(audioData, sourceSampleRate = 24000, sourceChannels = 1)
+            else:
                 asyncio.create_task(self._speaker.async_play(audioData, sourceSampleRate = 24000, sourceChannels = 1))
+        else:
+            if (speakerInstance.useRTC):
+                speakerInstance.play(audioData, sourceSampleRate = 24000, sourceChannels = 1)
             else:
                 asyncio.create_task(speakerInstance.async_play(audioData, sourceSampleRate = 24000, sourceChannels = 1))
 
@@ -405,13 +423,19 @@ class TTS:
             audioData = np.array(AudioSegment.from_mp3(BytesIO(audioData)).get_array_of_samples())
             audioData = audioData.astype(np.float32) / np.iinfo(np.int16).max
 
+            return audioData
+
         elif (self.mode == "kokoro"):
             language = language if language in TTS.kokoroTTSLanguageVoiceDict else "en"
-            for sentence in text:
-                generator = self._kokoroTTSAggregate[language](text = text, voice = TTS.kokoroTTSLanguageVoiceDict[language], split_pattern = r'[.。!！？?\n]+')
 
-                for i, (gs, ps, audio) in enumerate(generator):
-                    audioData = audio.cpu().numpy()
+            audioData = np.array([], dtype = np.float32)
+
+            generator = self._kokoroTTSAggregate[language](text = text, voice = TTS.kokoroTTSLanguageVoiceDict[language], split_pattern = r'[.。!！？?\n]+')
+
+            for i, (gs, ps, audio) in enumerate(generator):
+                audioData = np.concatenate((audioData, audio.cpu().numpy()))
+
+            return audioData
 
         elif (self.mode == "pykokoro"):
             language = language if language in TTS.kokoroTTSLanguageVoiceDict else "en"
@@ -420,9 +444,8 @@ class TTS:
 
             audioData = rendered.audio.astype(np.float32)
 
-        return audioData
+            return audioData
 
-        
     def stop_audio(self):
         try:
             self._speaker.abortPlayback()
@@ -445,6 +468,7 @@ class LLM:
     def __init__(self, model: str = "llama3.2", systemPrompt: str | None = None, enableAudio: bool = True, tts: TTS | None = None, manual: bool = False):
         import ollama
         self.ollama = ollama
+        self.asyncClient = self.ollama.AsyncClient()
 
         if (manual):
             modelsList = self.ollama.list().get("models", [])
@@ -467,21 +491,26 @@ class LLM:
         self.systemPrompt = "Reply in the same language as the input text. Be a casual chatting company." if systemPrompt == None else systemPrompt
         self.response = None
 
-    async def get_response(self, message: str | None = None, memory: list[dict[str, str]] = []):
+    def compile_message(self, message: str | None = None, memory: list[dict[str, str]] = []):
         compiledMessages = [{"role": "system", "content": self.systemPrompt}]
         for item in memory:
             compiledMessages.append({"role": "user", "content": item["user"]})
             compiledMessages.append({"role": "assistant", "content": item["response"]})
         compiledMessages.append({"role": "user", "content": message})
 
-        print(compiledMessages)
+        return compiledMessages
 
-        self.response = self.ollama.chat(model = self.model, messages = compiledMessages) if message != None else "Empty input message"
+    async def get_response(self, message: str | None = None, memory: list[dict[str, str]] = []):
+        compiledMessages = self.compile_message(message = message, memory = memory)
+
+        # print(compiledMessages)
+
+        self.response = self.ollama.chat(model = self.model, messages = compiledMessages, think = False)["message"]["content"] if message != None else "Empty input message"
         return self.response
 
     async def get_text_response(self, message: str | None = None, memory: list[dict[str, str]] = []) -> str:
         response = await self.get_response(message = message, memory = memory)
-        return response['message']['content']
+        return response
 
     async def audio_chat(self, message: str | None = None, language: str = "en", speakerInstance: Speaker | None = None, memory: list[dict[str, str]] = []) -> str:
         if (not self._enableAudio):
@@ -489,8 +518,34 @@ class LLM:
             return ""
         else:
             response = await self.get_text_response(message = message, memory = memory)
-            response = re.split(r'[.!?\n]+', response)
             self.tts.invoke_speak(text = response, language = language, speakerInstance = speakerInstance)
+            return response
+
+    async def audio_chat_stream(self, message: str | None = None, language: str = "en", speakerInstance: Speaker | None = None, memory: list[dict[str, str]] = []):
+        if (not self._enableAudio):
+            print("Audio is disabled")
+            return ""
+        else:
+            compiledMessages = self.compile_message(message = message, memory = memory)
+
+            response = ""
+            responseSentence = ""
+            
+            async for chunk in await self.asyncClient.chat(model = self.model, messages = compiledMessages, stream = True, think = False):
+                responseChunk = chunk["message"]["content"]
+                print(responseChunk)
+                responseSentence += responseChunk
+                if (re.search(r'[.。!！？?\n]+', responseChunk)):
+                    print(responseSentence)
+                    self.tts.invoke_speak(text = responseSentence, language = language, speakerInstance = speakerInstance)
+                    response += responseSentence
+                    responseSentence = ""
+
+                if chunk.get("done", False):
+                    break
+
+            print("audio chat finished")
+            self.response = response
             return response
 
     # async def chat_get_audio(self, message: str | None = None, language: str = "en", memory: list[dict[str, str]] = []):
@@ -505,23 +560,26 @@ class LLM:
         return instance
 
 class TableResponder:
-    def __init__(self, llmInstance: LLM, textOnly: bool = False, manual: bool = False):
+    def __init__(self, llmInstance: LLM, textOnly: bool = False, manual: bool = False, whisperModelSize: str | int = "base", whisperDevice: str = "cpu", whisperComputeType: str = "int8", whisperLanguage: str | None = None, speakerDeviceIndex: int | None = None, speakerSampleRate: int | None = None, micSampleRate: int | None = None, micDeviceIndex: int | None = None, micChunkDuration: int | float = 0.5, micFlatten: bool = True, micDenoise: bool = True, micStem: bool = False, transcriberBeamSize: int = 1, transcriberFilter: bool = True, transcriberUseContextual: str | int = 1, transcriberSplitParts: bool = False, transcriberDiarization: bool = False, RTCIP: str = "127.0.0.1", RTCPort: int = 55555):
         self.SILENCE_THRESHOLD = SILENCE_THRESHOLD
-        self._RTCInstance = RTCInstance(debug = False)
-        self._whisperObject = WhisperObject(manual = True) if not textOnly else None
-        self._transcriber = Transcriber(rtcInstance = self._RTCInstance, whisperObject = self._whisperObject, manual = True) if not textOnly else None
+        self._RTCInstance = RTCInstance(debug = True, ip = RTCIP, port = RTCPort)
+        self._whisperObject = WhisperObject(manual = manual, device = whisperDevice, modelSize = whisperModelSize, computeType = whisperComputeType, language = whisperLanguage) if not textOnly else None
+        # skip debug playback and its speaker components
+        self._transcriber = Transcriber(useRTC = True, rtcInstance = self._RTCInstance, whisperObject = self._whisperObject, manual = manual, beamSize = transcriberBeamSize, filter = transcriberFilter, useContextual = transcriberUseContextual, splitParts = transcriberSplitParts, diarization = transcriberDiarization, micStem = micStem, micSampleRate = micSampleRate, micDenoise = micDenoise, micFlatten = micFlatten, micChunkDuration = micChunkDuration, micDeviceIndex = micDeviceIndex) if not textOnly else None
         self._LLMInstance = llmInstance
-        self._speaker = Speaker(manual = manual, useRTC = self._transcriber.useRTC)
+        self._speaker = Speaker(manual = manual, useRTC = self._transcriber.useRTC, sampleRate = speakerSampleRate, deviceIndex = speakerDeviceIndex)
         self.silentTime = 0.0
         self.startTime = time.perf_counter()
         self.spoken = False
         self.audioPeakAmplitude = 0.0
-        self.llmTriggerSilenceDuration = 2.0
+        self.llmTriggerSilenceDuration = LLM_TRIGGER_SILENCE_DURATION
         self.previewTranscribeText = ""
         self.previewTranscribeLanguage = ""
         self.memoryEntryLimit = 5
+        self.running = False
+        self.closed = False
+        self.port = RTCPort
         self._memory = []
-        # dict[str, dict[str, str]] = {} # ["timestamp": ["user": "user chat", "response": "response chat"]]
 
     async def init_RTC(self):
         await self._transcriber.init_RTC()
@@ -529,7 +587,10 @@ class TableResponder:
 
     # CALL ONLY FOR AUDIO LOOP, no diarization implementation for now
     async def loop_frame_audio(self):
-        while True:
+        while (self.running):
+            if (self._transcriber.closed):
+                break
+
             self.audioPeakAmplitude = self._transcriber.mic.peakAmplitude
 
             self.process_transcription_preview()
@@ -542,19 +603,34 @@ class TableResponder:
                 self.spoken = True
 
             if ((self.silentTime > self.llmTriggerSilenceDuration) and self.spoken):
-                self._transcriber.mic.ready = False
+                self._transcriber.pauseTranscribe = True
                 message = self._transcriber.transcribeTextNoncontextual
-                response = await self._LLMInstance.audio_chat(message = message, language = self._transcriber.languageNoncontextual, speakerInstance = self._speaker, memory = self._memory)
-                self._add_memory(message = message, response = response)
+                if (message != ""):
+                    response = await self._LLMInstance.audio_chat_stream(message = message, language = self._transcriber.languageNoncontextual, speakerInstance = self._speaker, memory = self._memory)
+                    self._add_memory(message = message, response = response)
+                print("finished responding")
+                self._transcriber.mic.ready = False
                 self._transcriber.flush_buffer()
                 self._transcriber.mic.ready = True
                 self.silentTime = 0.0
                 self.spoken = False
+                print("unlocking transcriber")
+                self._transcriber.pauseTranscribe = False
+                print("unlocked transcriber")
 
             await asyncio.sleep(0.05)
 
+        self.closed = True
+
+    def start(self):
+        self.running = True
+        asyncio.create_task(self.loop_frame_audio())
+
+    def close(self):
+        self.running = False
+
     def print_state(self):
-        print(f"[{self._transcriber.mic.peakAmplitude:.5f}] [{self.silentTime:.5f}s {self.spoken}] {self._transcriber.transcribeTextNoncontextual:.40} | {(self._LLMInstance.response["message"]["content"] if self._LLMInstance.response != None else ""):.40}\033[K")
+        print(f"[{self._transcriber.mic.peakAmplitude:.5f}] [{self.silentTime:.5f}s {self.spoken}] [{self._transcriber.languageNoncontextual}] {self._transcriber.transcribeTextNoncontextual:.40} | {(self._LLMInstance.response if self._LLMInstance.response != None else ""):.40}\033[K")
 
     # CALL ONLY FOR TEXT LOOP ["text" channel]
     # async def loop_frame_text(self):
@@ -562,7 +638,7 @@ class TableResponder:
     def _add_memory(self, message: str = "", response: str = ""):
         timeNow = datetime.now()
         timestamp = timeNow.strftime("%Y-%m-%d %H:%M:%S")
-        memory = {"timestamp": timestamp, "user": message, "response": response}
+        memory = {"timestamp": timestamp, "user": message, "response": " ".join(response) if type(response) != str else response}
         self._memory.append(memory)
         if (len(self._memory) > 5):
             self._memory.pop(0)
@@ -572,163 +648,258 @@ class TableResponder:
         self.previewTranscribeLanguage = self._transcriber.languageNoncontextual
         self.previewTranscribeText = self._transcriber.transcribeTextNoncontextual
 
+async def instance_server_handler(websocket: ServerConnection):
+    global lastIP
+    global lastPort
+    global served
+    global occupiedPorts
+    
+    while True:
+        response = await websocket.recv()
+        if (response[0:6] == "REQINS"):
+            await websocket.send(f"ANSINS{lastIP}/{lastPort}", text = True)
+            await websocket.close()
+            print("handler closed")
+            served = True
+
+async def instance_server_task_loop(llmInstance: LLM, serverAddress: str, serverPort: int):
+    global tables
+    global lastIP
+    global lastPort
+    global served
+    global occupiedPorts
+    served = False
+
+    print("await serve")
+    server = await serve(instance_server_handler, serverAddress, serverPort)
+
+    while True:
+        while (not served):        
+            await asyncio.sleep(0.1)
+        served = False
+        print("served, initializing responder")
+        lastPort = kitanet_helper.find_port(55555, 56000, occupiedPorts)
+        occupiedPorts.append(lastPort)
+        table = TableResponder(manual = False, llmInstance = llmInstance, whisperModelSize = "small", whisperDevice = "cuda", whisperComputeType = "float16", micChunkDuration = 1.0, micFlatten = True, micDenoise = False, RTCIP = lastIP, RTCPort = lastPort, transcriberBeamSize = 2, transcriberDiarization = False, transcriberFilter = True, transcriberSplitParts = False, transcriberUseContextual = 0)
+        print(f"assigned port {lastPort}")
+        await table.init_RTC()
+        print("finished init rtc")
+        table._transcriber.mic.ready = True
+        tables.append(table)
+        print("appended")
+
 async def main():
+    global tables
+    global lastIP
+    global lastPort
+    global occupiedPorts
+    occupiedPorts = []
     tables = []
+    lastIP = "127.0.0.1"
+    lastPort = 55555
+
     try:
         os.system("")
 
-        while True:
-            null, tablesCount = kitanet_helper.succeeds(int, input("Table instances: "))
-            if (0 < tablesCount):
-                break
+        # while True:
+        #     null, tablesCount = kitanet_helper.succeeds(int, input("Table instances: "))
+        #     if (0 < tablesCount):
+        #         break
 
         Transcriber.transcriptionLock = asyncio.Lock()
-        llm = await LLM.create(model = "qwen2.5:3b-instruct-q8_0", manual = True, externalSpeaker = True, ttsMode = "kokoro")
-        tables = [TableResponder(llmInstance = llm, manual = True) for _ in range(tablesCount)]
-        for table in tables:
-            await table.init_RTC()
-            table._transcriber.mic.ready = True
-
+        llm = await LLM.create(model = "qwen2.5:7b", manual = False, externalSpeaker = True, ttsMode = "kokoro") #qwen2.5:3b-instruct-q8_0
         await llm.get_text_response(message = "")
 
-        for table in tables:
-            asyncio.create_task(table.loop_frame_audio())
-
+        ip = get_ip()
+        ipList: list[str] = []
+        print("IP addresses:")
+        for key, value in ip.items():
+            print(f"{key:35} | {value}")
+            ipList.append(value.split("/")[0])
         while True:
-            for table in tables:
+            serverAddress = input("Input IP address for instance server: ")
+            if (serverAddress == ""):
+                serverAddress = "127.0.0.1"
+                print("Using default address localhost 127.0.0.1")
+                break
+            elif (serverAddress) in ipList:
+                break
+            else:
+                print("Invalid IP address")
+        while True:
+            serverPort = input("Input port for server (enter to use default value 50000): ")
+            if (serverPort == ""):
+                serverPort = 50000
+                print("Using default value: 50000")
+                break
+            elif (returnTuple := kitanet_helper.succeeds(int, serverPort))[0]:
+                if (0 <= returnTuple[1] <= 65535):
+                    serverPort = returnTuple[1]
+                    break
+                else:
+                    print("Value is outside of port range (0~65535)")
+
+        lastIP = serverAddress
+        asyncio.create_task(instance_server_task_loop(llm, serverAddress, serverPort))
+
+        ### handle this in separate loop
+        # tables = [TableResponder(llmInstance = llm, manual = True) for _ in range(tablesCount)]
+        # for table in tables:
+        #     await table.init_RTC()
+        #     table._transcriber.mic.ready = True
+
+        # for table in tables:
+        #     asyncio.create_task(table.loop_frame_audio())
+        ###
+
+        # add available ports assignment mechanism
+        while True:
+            for index, table in enumerate(tables):
+                if (table.closed):
+                    print(f"removed table {index}")
+                    occupiedPorts.remove(table.port)
+                    tables.pop(index)
+                if (not table.running):
+                    table.start()
                 table.print_state()
-            print(f"\033[{len(tables)}A\r", end = "")
-            await asyncio.sleep(0.05)
+            if (len(tables) > 0):
+                print(f"\033[{len(tables)}A\r", end = "")
+            await asyncio.sleep(0.1)
 
     except KeyboardInterrupt:
         llm.tts.close()
         for table in tables:
             table._transcriber.close()
+
+# check whether all manual configs have an init parameter
+# add incoming connection request handler loop, communicate with datestamp / id -> append a new TableResponder to list
+
+# async def main_legacy():
+#     transcribers = []
+#     try:
+#         os.system("")
+
+#         instancesCount = await asyncio.to_thread(input, "Set amount of instances: ")
+#         instancesCount = int(instancesCount)
         
-async def main_legacy():
-    transcribers = []
-    try:
-        os.system("")
+#         Transcriber.transcriptionLock = asyncio.Lock()
+#         whisperObject = WhisperObject(manual = True)
+#         if (whisperObject.modelSize != None):
+#             print("Initiated whisper\n")
 
-        instancesCount = await asyncio.to_thread(input, "Set amount of instances: ")
-        instancesCount = int(instancesCount)
+#         # using rtc
+#         transcribers = [Transcriber(whisperObject = whisperObject, manual = True) for _ in range(instancesCount)]
+#         for transcriber in transcribers:
+#             # configs, rtc assignments done here
+#             if (transcriber.useRTC): await transcriber.init_RTC()
+
+#         while True:
+#             useLLM = input("Enable LLM interaction (true/false): ")
+#             if (useLLM == ""):
+#                 useLLM = True
+#                 print("Using default settings: True")
+#                 break
+#             if (kitanet_helper.succeeds(int, useLLM)[0]):
+#                 useLLM = int(useLLM) != 0
+#                 break
+#             else:
+#                 if (useLLM.lower() not in ["true", "false"]):
+#                     continue
+#                 useLLM = useLLM.lower() == "true"
+#                 break
+
+#         if (useLLM):
+#             llm = await LLM.create(model = "qwen2.5:3b-instruct-q8_0", manual = True)
+
+#         iterationCount = 0
+#         silentTime = 0.0
+#         startTime = time.perf_counter()
+#         spoken = False
+
+#         for transcriber in transcribers:
+#             transcriber.mic.ready = True
         
-        Transcriber.transcriptionLock = asyncio.Lock()
-        whisperObject = WhisperObject(manual = True)
-        if (whisperObject.modelSize != None):
-            print("Initiated whisper\n")
+#         while True:
+#             speakerCount = 0
+#             newlineCount = 0
+#             peakAmplitude = 0.0
+#             lastPeakTranscriber = -1
+#             print(f"[{iterationCount}] Last transcribe time {sum(transcriber.timeToTranscribe for transcriber in transcribers):.5f}s\033[K")
 
-        # using rtc
-        transcribers = [Transcriber(whisperObject = whisperObject, manual = True) for _ in range(instancesCount)]
-        for transcriber in transcribers:
-            # configs, rtc assignments done here
-            if (transcriber.useRTC): await transcriber.init_RTC()
+#             for i, transcriber in enumerate(transcribers):
+#                 print(f"Peak input signal: {transcriber.mic.peakAmplitude}\033[K")
+#                 if (transcriber.mic.peakAmplitude > peakAmplitude):
+#                     peakAmplitude = transcriber.mic.peakAmplitude
+#                     lastPeakTranscriber = i
 
-        while True:
-            useLLM = input("Enable LLM interaction (true/false): ")
-            if (useLLM == ""):
-                useLLM = True
-                print("Using default settings: True")
-                break
-            if (kitanet_helper.succeeds(int, useLLM)[0]):
-                useLLM = int(useLLM) != 0
-                break
-            else:
-                if (useLLM.lower() not in ["true", "false"]):
-                    continue
-                useLLM = useLLM.lower() == "true"
-                break
+#                 if (transcriber.contextualMode[0]):
+#                     language = transcriber.language
+#                     text = transcriber.transcribeText
+#                     if (text.count("<>") > 0):
+#                         text = text.split("<>")
+#                         print(f"\rInstance {i}: \t[{language}] {text[0]}\033[K")
+#                         for textPart in text:
+#                             print(f"{textPart}\033[K")
+#                             newlineCount += 1
+#                     else:
+#                         print(f"\rInstance {i}: \t[{language}] {text[-50:]:<50}\033[K")
 
-        if (useLLM):
-            llm = await LLM.create(model = "qwen2.5:3b-instruct-q8_0", manual = True)
-
-        iterationCount = 0
-        silentTime = 0.0
-        startTime = time.perf_counter()
-        spoken = False
-
-        for transcriber in transcribers:
-            transcriber.mic.ready = True
-        
-        while True:
-            speakerCount = 0
-            newlineCount = 0
-            peakAmplitude = 0.0
-            lastPeakTranscriber = -1
-            print(f"[{iterationCount}] Last transcribe time {sum(transcriber.timeToTranscribe for transcriber in transcribers):.5f}s\033[K")
-
-            for i, transcriber in enumerate(transcribers):
-                print(f"Peak input signal: {transcriber.mic.peakAmplitude}\033[K")
-                if (transcriber.mic.peakAmplitude > peakAmplitude):
-                    peakAmplitude = transcriber.mic.peakAmplitude
-                    lastPeakTranscriber = i
-
-                if (transcriber.contextualMode[0]):
-                    language = transcriber.language
-                    text = transcriber.transcribeText
-                    if (text.count("<>") > 0):
-                        text = text.split("<>")
-                        print(f"\rInstance {i}: \t[{language}] {text[0]}\033[K")
-                        for textPart in text:
-                            print(f"{textPart}\033[K")
-                            newlineCount += 1
-                    else:
-                        print(f"\rInstance {i}: \t[{language}] {text[-50:]:<50}\033[K")
-
-                if (transcriber.contextualMode[1]):
-                    language = transcriber.languageNoncontextual
-                    text = transcriber.transcribeTextNoncontextual
-                    if (text.count("<>") > 0):
-                        text = text.split("<>")
-                        print(f"\rInstance {i}: \t[{language}] {text[0]}\033[K")
-                        for textPart in text:
-                            print(f"{textPart}\033[K")
-                            newlineCount += 1
-                    else:
-                        print(f"\rInstance {i}: \t[{language}] {text[-50:]:<50}\033[K")
+#                 if (transcriber.contextualMode[1]):
+#                     language = transcriber.languageNoncontextual
+#                     text = transcriber.transcribeTextNoncontextual
+#                     if (text.count("<>") > 0):
+#                         text = text.split("<>")
+#                         print(f"\rInstance {i}: \t[{language}] {text[0]}\033[K")
+#                         for textPart in text:
+#                             print(f"{textPart}\033[K")
+#                             newlineCount += 1
+#                     else:
+#                         print(f"\rInstance {i}: \t[{language}] {text[-50:]:<50}\033[K")
                         
-                if (transcriber.enableDiarization):
-                    try:
-                        for turn, speaker in transcriber.diarizationOutput.speaker_diarization:
-                            print(f"Start = {turn.start:.1f}s, Stop = {turn.end:.1f}s, {speaker}\033[K")
-                            speakerCount += 1
-                    except Exception as exception:
-                        print(f"Diarization failed: {exception}")
-                        speakerCount += 1
-                        continue
+#                 if (transcriber.enableDiarization):
+#                     try:
+#                         for turn, speaker in transcriber.diarizationOutput.speaker_diarization:
+#                             print(f"Start = {turn.start:.1f}s, Stop = {turn.end:.1f}s, {speaker}\033[K")
+#                             speakerCount += 1
+#                     except Exception as exception:
+#                         print(f"Diarization failed: {exception}")
+#                         speakerCount += 1
+#                         continue
 
-            if (spoken):
-                silentTime += time.perf_counter() - startTime
-            startTime = time.perf_counter()
+#             if (spoken):
+#                 silentTime += time.perf_counter() - startTime
+#             startTime = time.perf_counter()
 
-            print(f"Transcriber {lastPeakTranscriber} monitored for LLM input, time since last silence: {silentTime}\033[K")
-            print("=============================================================================================================================\x1b[J")
+#             print(f"Transcriber {lastPeakTranscriber} monitored for LLM input, time since last silence: {silentTime}\033[K")
+#             print("=============================================================================================================================\x1b[J")
 
-            print(f"\033[{((transcriber.contextualMode.count(True) + 1) * len(transcribers)) + 3 + speakerCount + newlineCount}A\r", end = "")
-            iterationCount += 1
+#             print(f"\033[{((transcriber.contextualMode.count(True) + 1) * len(transcribers)) + 3 + speakerCount + newlineCount}A\r", end = "")
+#             iterationCount += 1
 
-            if (peakAmplitude > SILENCE_THRESHOLD):
-                silentTime = 0
-                spoken = True
+#             if (peakAmplitude > SILENCE_THRESHOLD):
+#                 silentTime = 0
+#                 spoken = True
 
-            if ((silentTime > LLM_TRIGGER_SILENCE_DURATION) and spoken and useLLM):
-                # llm.stopAudio()
-                message = transcribers[lastPeakTranscriber].transcribeText
-                if (message != ""):
-                    await llm.audio_chat(message = message, language = transcribers[lastPeakTranscriber].language)
-                for transcriber in transcribers:
-                    transcriber.flush_buffer()
-                silentTime = 0
-                spoken = False
+#             if ((silentTime > LLM_TRIGGER_SILENCE_DURATION) and spoken and useLLM):
+#                 # llm.stopAudio()
+#                 message = transcribers[lastPeakTranscriber].transcribeText
+#                 if (message != ""):
+#                     await llm.audio_chat(message = message, language = transcribers[lastPeakTranscriber].language)
+#                 for transcriber in transcribers:
+#                     transcriber.flush_buffer()
+#                 silentTime = 0
+#                 spoken = False
                 
-            await asyncio.sleep(0.1)
+#             await asyncio.sleep(0.1)
 
-    except KeyboardInterrupt:
-        print("\n\n\nExiting")
-    finally:
-        for transcriber in transcribers:
-            transcriber.close()
-        print("\033[K\n\033[K\n\033[K\n")
+#     except KeyboardInterrupt:
+#         print("\n\n\nExiting")
+#     finally:
+#         for transcriber in transcribers:
+#             transcriber.close()
+#         print("\033[K\n\033[K\n\033[K\n")
+
+
 
 if __name__ == "__main__":
     asyncio.run(main())

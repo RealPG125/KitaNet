@@ -7,21 +7,44 @@ import json
 from scipy.signal import resample_poly
 from kitanet_comm import RTCInstance
 from kitanet_audio import Mic, Speaker
+from websockets.asyncio.client import connect
 
 
 
 async def main():
-    rtc = RTCInstance(debug = True)
-    await rtc.init_auto_config(offer = False, channels = ["audio", "control"], stackData = True)
     mic = Mic(manual = True)
     speaker = Speaker(manual = True)
-    rtc.send_data("control", f"CONFIG_{json.dumps({'MICSAMPLERATE': mic.sampleRate})}")
-    rtc.send_data("control", f"CONFIG_{json.dumps({'MICCHANNELS': 1 if mic.flatten else mic.channels})}")
-    rtc.send_data("control", f"CONFIG_{json.dumps({'SPEAKERSAMPLERATE': speaker.sampleRate})}")
-    rtc.send_data("control", f"CONFIG_{json.dumps({'SPEAKERCHANNELS': speaker.channels})}")
+
+    serverAddress = "127.0.0.1"
+    serverPort = 55555
+    serverConfigAddress = "127.0.0.1"
+    serverConfigPort = 50000
+    uri = f"ws://{serverConfigAddress}:{serverConfigPort}/"
+
+    async with connect(uri) as websocket:
+        await websocket.send("REQINS")
+
+        while True:
+            response = await websocket.recv()
+            if (response[:6] == "ANSINS"):
+                response = response[6:].split("/")
+                serverAddress = response[0]
+                serverPort = response[1]
+                await websocket.close()
+                print(f"got {serverAddress}/{serverPort}")
+                break
+
+    input("Press enter to connect")
+
+    await asyncio.sleep(10)
+    rtc = RTCInstance(debug = True, ip = serverAddress, port = serverPort)
+    await rtc.init_auto_config(offer = False, channels = ["audio", "control"], stackData = True, manual = False)
+    rtc.send_data("control", f'CONFIG_{json.dumps({"MICSAMPLERATE": mic.sampleRate})}')
+    rtc.send_data("control", f'CONFIG_{json.dumps({"MICCHANNELS": 1 if mic.flatten else mic.channels})}')
+    rtc.send_data("control", f'CONFIG_{json.dumps({"SPEAKERSAMPLERATE": speaker.sampleRate})}')
+    rtc.send_data("control", f'CONFIG_{json.dumps({"SPEAKERCHANNELS": speaker.channels})}')
     rtc.send_data("control", "EOF")
 
-    input("Press enter to start")
     mic.ready = True
 
     while True:
@@ -43,6 +66,7 @@ async def main():
 
             speaker.play(audio)
             mic.ready = True
+
 
 
 if __name__ == "__main__":
