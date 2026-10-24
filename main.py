@@ -2,7 +2,7 @@ import sqlite3
 import time
 from datetime import datetime
 from typing import List, Optional
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -21,21 +21,11 @@ app.add_middleware(
 DB_FILE = "restaurant.db"
 
 ALLERGEN_SYNONYMS = {
-    "エビ": "えび", "海老": "えび",
-    "カニ": "かに", "蟹": "かに",
-    "ソバ": "そば", "蕎麦": "そば",
-    "コムギ": "小麦",
-    "たまご": "卵", "タマゴ": "卵", "玉子": "卵", "鶏卵": "卵",
-    "乳製品": "乳", "ミルク": "乳", "牛乳": "乳",
-    "落花生": "落花生（ピーナッツ）", "ピーナッツ": "落花生（ピーナッツ）",
-    "クルミ": "くるみ", "胡桃": "くるみ",
-    "サケ": "さけ", "鮭": "さけ", "サーモン": "さけ",
-    "サバ": "さば", "鯖": "さば",
-    "イカ": "いか", "烏賊": "いか",
-    "アワビ": "あわび", "鮑": "あわび",
-    "ゴマ": "ごま", "胡麻": "ごま",
-    "ヤマイモ": "やまいも", "山芋": "やまいも",
-    "キウイ": "キウイフルーツ",
+    "エビ": "えび", "海老": "えび", "カニ": "かに", "蟹": "かに",
+    "ソバ": "そば", "蕎麦": "そば", "コムギ": "小麦", "たまご": "卵",
+    "タマゴ": "卵", "玉子": "卵", "乳製品": "乳", "ミルク": "乳",
+    "牛乳": "乳", "落花生": "落花生（ピーナッツ）", "ピーナッツ": "落花生（ピーナッツ）",
+    "キウイ": "キウイフルーツ", "ゴマ": "ごま", "胡麻": "ごま"
 }
 
 def normalize_allergen(name: str) -> str:
@@ -71,9 +61,17 @@ class AssignRequest(BaseModel):
     table_id: int
     user_ids: List[str]
     session_id: str
-    waiting_session_id: Optional[str] = None
 
-# 1. 顧客一覧の取得
+# 1. 待合リスト取得
+@app.get("/api/waiting-queue")
+def get_waiting_queue():
+    return [
+        {"queueId": "q-01", "guestsCount": 1, "userIds": ["u-0008"]},  # 鈴木様（そばアレルギー）
+        {"queueId": "q-02", "guestsCount": 1, "userIds": ["u-0009"]},  # 渡辺様（常連）
+        {"queueId": "q-03", "guestsCount": 1, "userIds": ["u-0010"]}   # 木村様（旅行）
+    ]
+
+# 2. 顧客一覧の取得
 @app.get("/api/users")
 def get_all_users():
     with get_db() as conn:
@@ -81,35 +79,23 @@ def get_all_users():
         result = {}
         for u in users:
             uid = u["id"]
-            algs = conn.execute("""
-                SELECT a.name FROM UserAllergy ua
-                JOIN Allergy a ON ua.allergy_id = a.id
-                WHERE ua.user_id = ?
-            """, (uid,)).fetchall()
-            favs = conn.execute("""
-                SELECT m.name FROM UserMenuPreference ump
-                JOIN Menu m ON ump.menu_id = m.id
-                WHERE ump.user_id = ?
-            """, (uid,)).fetchall()
-            mem = conn.execute("""
-                SELECT memory_content FROM UserMemory
-                WHERE user_id = ? ORDER BY id DESC LIMIT 1
-            """, (uid,)).fetchone()
+            algs = conn.execute("SELECT a.name FROM UserAllergy ua JOIN Allergy a ON ua.allergy_id = a.id WHERE ua.user_id = ?", (uid,)).fetchall()
+            favs = conn.execute("SELECT m.name FROM UserMenuPreference ump JOIN Menu m ON ump.menu_id = m.id WHERE ump.user_id = ?", (uid,)).fetchall()
+            mem = conn.execute("SELECT memory_content FROM UserMemory WHERE user_id = ? ORDER BY id DESC LIMIT 1", (uid,)).fetchone()
             sess = conn.execute("""
                 SELECT ts.id as sId, ts.table_id as tId, ts.start_datetime as [in], ts.end_datetime as [out]
-                FROM TableSessionMembers tsm
-                JOIN TableSession ts ON tsm.table_session_id = ts.id
-                WHERE tsm.user_id = ? AND ts.table_id > 0
-                ORDER BY ts.start_datetime DESC
+                FROM TableSessionMembers tsm JOIN TableSession ts ON tsm.table_session_id = ts.id
+                WHERE tsm.user_id = ? ORDER BY ts.start_datetime DESC
             """, (uid,)).fetchall()
 
             result[uid] = {
                 "id": uid,
                 "name": u["name"],
                 "region": u["region"] or "未登録",
-                "count": u["visit_count"] if "visit_count" in u.keys() else 1,
+                # UserData に visit_count 列は無いので、セッション数から算出
+                "count": max(len(sess), 1),
                 "last": u["last_visit"] or "-",
-                "is_deleted": bool(u["is_deleted"]) if "is_deleted" in u.keys() else False,
+                "is_deleted": bool(u["is_deleted"]),
                 "allergies": [a["name"] for a in algs],
                 "favs": [f["name"] for f in favs],
                 "hint": mem["memory_content"] if mem else "",
@@ -117,31 +103,20 @@ def get_all_users():
             }
         return result
 
-# 2. フロア全体の稼働状況（1〜10番卓）
+# 3. フロア稼働状況（利用中・会計中・予約中の判定）
 @app.get("/api/floor-status")
 def get_floor_status():
     with get_db() as conn:
         active_sessions = conn.execute("""
-            SELECT * FROM TableSession 
-            WHERE table_id > 0 AND (
-               end_datetime IS NULL 
-               OR end_datetime = '利用中' 
-               OR end_datetime = '会計中' 
-               OR end_datetime = '予約中'
-            )
+            SELECT * FROM TableSession
+            WHERE end_datetime IN ('利用中', '会計中', '予約中')
         """).fetchall()
 
         tables_data = {}
         for i in range(1, 11):
             tables_data[i] = {
-                "sessionId": None,
-                "type": "empty",
-                "status": "empty",
-                "stayTime": None,
-                "guestCount": 0,
-                "userIds": [],
-                "hasSpoken": False,
-                "summary": ""
+                "sessionId": None, "type": "empty", "status": "empty",
+                "stayTime": None, "guestCount": 0, "userIds": [], "hasSpoken": False, "summary": ""
             }
 
         for s in active_sessions:
@@ -149,15 +124,10 @@ def get_floor_status():
             if t_id not in tables_data:
                 continue
 
-            members = conn.execute("""
-                SELECT user_id FROM TableSessionMembers WHERE table_session_id = ?
-            """, (s["id"],)).fetchall()
+            members = conn.execute("SELECT user_id FROM TableSessionMembers WHERE table_session_id = ?", (s["id"],)).fetchall()
             u_ids = [m["user_id"] for m in members]
 
-            conv = conn.execute("""
-                SELECT memory_content FROM ConversationMemory 
-                WHERE table_session_id = ? ORDER BY timestamp DESC LIMIT 1
-            """, (s["id"],)).fetchone()
+            conv = conn.execute("SELECT memory_content FROM ConversationMemory WHERE table_session_id = ? ORDER BY timestamp DESC LIMIT 1", (s["id"],)).fetchone()
             summary_text = conv["memory_content"] if conv else ""
 
             is_reserved = (s["end_datetime"] == "予約中")
@@ -176,7 +146,7 @@ def get_floor_status():
             tables_data[t_id] = {
                 "sessionId": s["id"],
                 "type": s_type,
-                "status": s["end_datetime"] or "利用中",
+                "status": s["end_datetime"],
                 "stayTime": s["start_datetime"] if not is_reserved else None,
                 "reserveTime": s["start_datetime"] if is_reserved else None,
                 "guestCount": max(len(u_ids), 1),
@@ -187,148 +157,47 @@ def get_floor_status():
 
         return tables_data
 
-# 3. 待合受付リストの取得（table_id = 0 のセッション）
-@app.get("/api/waiting-queue")
-def get_waiting_queue():
-    with get_db() as conn:
-        sessions = conn.execute("""
-            SELECT * FROM TableSession 
-            WHERE table_id = 0 AND (end_datetime = '待合中' OR end_datetime IS NULL)
-            ORDER BY datetime ASC
-        """).fetchall()
-
-        queue = []
-        for s in sessions:
-            members = conn.execute("""
-                SELECT user_id FROM TableSessionMembers WHERE table_session_id = ?
-            """, (s["id"],)).fetchall()
-            u_ids = [m["user_id"] for m in members]
-            queue.append({
-                "queueId": s["id"],
-                "guestsCount": max(len(u_ids), 1),
-                "userIds": u_ids,
-                "time": s["datetime"]
-            })
-        return queue
-
-# 4. 新規グループ受付（table_id = 0 としてDB永続化）
+# 4. 新規グループ受付
 @app.post("/api/register-group")
 def register_group(req: GroupRegisterRequest):
     created_user_ids = []
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
     today_date = datetime.now().strftime("%Y-%m-%d")
-    queue_session_id = f"wait-{int(time.time()*1000)}"
 
     with get_db() as conn:
         for idx, u in enumerate(req.users):
             if u.user_id:
                 uid = u.user_id
-                conn.execute("""
-                    UPDATE UserData 
-                    SET last_visit = ?, region = COALESCE(NULLIF(?, ''), region), is_deleted = 0
-                    WHERE id = ?
-                """, (now_str, u.region, uid))
+                conn.execute("UPDATE UserData SET last_visit = ?, region = COALESCE(NULLIF(?, ''), region), is_deleted = 0 WHERE id = ?", (now_str, u.region, uid))
             else:
                 uid = f"u-{int(time.time()*1000)}-{idx+1}"
-                conn.execute("""
-                    INSERT INTO UserData (id, name, region, join_datetime, last_visit, is_deleted)
-                    VALUES (?, ?, ?, ?, ?, 0)
-                """, (uid, u.name, u.region, now_str, now_str))
+                conn.execute("INSERT INTO UserData (id, name, region, join_datetime, last_visit, is_deleted) VALUES (?, ?, ?, ?, ?, 0)",
+                             (uid, u.name, u.region, now_str, now_str))
 
                 normalized_algs = list(dict.fromkeys([normalize_allergen(a) for a in u.allergies if a.strip()]))
                 for alg_name in normalized_algs:
                     row = conn.execute("SELECT id FROM Allergy WHERE name = ?", (alg_name,)).fetchone()
-                    if row:
-                        alg_id = row["id"]
-                    else:
-                        cur = conn.execute("INSERT INTO Allergy (name) VALUES (?)", (alg_name,))
-                        alg_id = cur.lastrowid
-                    conn.execute("INSERT OR IGNORE INTO UserAllergy (user_id, allergy_id, info_date) VALUES (?, ?, ?)",
-                                 (uid, alg_id, today_date))
+                    alg_id = row["id"] if row else conn.execute("INSERT INTO Allergy (name) VALUES (?)", (alg_name,)).lastrowid
+                    conn.execute("INSERT OR IGNORE INTO UserAllergy (user_id, allergy_id, info_date) VALUES (?, ?, ?)", (uid, alg_id, today_date))
 
                 if u.hint:
-                    conn.execute("""
-                        INSERT INTO UserMemory (user_id, timestamp, memory_topic, memory_content)
-                        VALUES (?, ?, '新規受付', ?)
-                    """, (uid, now_str, u.hint))
+                    conn.execute("INSERT INTO UserMemory (user_id, timestamp, memory_topic, memory_content) VALUES (?, ?, '新規受付', ?)", (uid, now_str, u.hint))
 
             created_user_ids.append(uid)
-
-        # 0番テーブル（受付セッション）として登録
-        conn.execute("""
-            INSERT INTO TableSession (id, datetime, table_id, start_datetime, end_datetime, conversation_status)
-            VALUES (?, ?, 0, ?, '待合中', 0)
-        """, (queue_session_id, now_str, now_str))
-
-        for uid in created_user_ids:
-            conn.execute("INSERT INTO TableSessionMembers (table_session_id, user_id) VALUES (?, ?)", 
-                         (queue_session_id, uid))
-
         conn.commit()
 
-    return {"status": "success", "session_id": queue_session_id, "user_ids": created_user_ids}
+    return {"status": "success", "user_ids": created_user_ids}
 
-# 5. 配席セッション作成（0番卓から本配席へ切り替え）
-@app.post("/api/sessions/assign")
-def assign_session(req: AssignRequest):
-    now = datetime.now().strftime("%Y-%m-%d %H:%M")
-    with get_db() as conn:
-        # 待合セッションが存在する場合は「案内済み」に更新
-        if req.waiting_session_id:
-            conn.execute("UPDATE TableSession SET end_datetime = '案内済' WHERE id = ?", (req.waiting_session_id,))
-
-        conn.execute("""
-            INSERT INTO TableSession (id, datetime, table_id, start_datetime, end_datetime, conversation_status)
-            VALUES (?, ?, ?, ?, '利用中', 0)
-        """, (req.session_id, now, req.table_id, now))
-        
-        for uid in req.user_ids:
-            conn.execute("INSERT INTO TableSessionMembers (table_session_id, user_id) VALUES (?, ?)", (req.session_id, uid))
-            conn.execute("UPDATE UserData SET last_visit = ? WHERE id = ?", (now, uid))
-        conn.commit()
-    return {"status": "assigned"}
-
-# 6. 会計処理（利用中 ➔ 会計中）
-@app.post("/api/sessions/{session_id}/bill")
-def bill_session(session_id: str):
-    with get_db() as conn:
-        conn.execute("UPDATE TableSession SET end_datetime = '会計中' WHERE id = ?", (session_id,))
-        conn.commit()
-    return {"status": "billing"}
-
-# 7. 退店処理（会計中 ➔ 退店・空席化）
-@app.post("/api/sessions/{session_id}/checkout")
-def checkout_session(session_id: str):
-    now = datetime.now().strftime("%H:%M 退店")
-    with get_db() as conn:
-        conn.execute("UPDATE TableSession SET end_datetime = ? WHERE id = ?", (now, session_id))
-        conn.commit()
-    return {"status": "checked_out"}
-
-# 8. 待合からの削除
-@app.delete("/api/waiting-queue/{session_id}")
-def delete_waiting_queue(session_id: str):
-    with get_db() as conn:
-        conn.execute("UPDATE TableSession SET end_datetime = '取消' WHERE id = ?", (session_id,))
-        conn.commit()
-    return {"status": "cancelled"}
-
-# 9. カルテ更新
+# 5. カルテ更新
 @app.put("/api/users/{user_id}")
 def update_user_profile(user_id: str, req: UserUpdateRequest):
     with get_db() as conn:
         conn.execute("UPDATE UserData SET name = ?, region = ? WHERE id = ?", (req.name, req.region, user_id))
         conn.execute("DELETE FROM UserAllergy WHERE user_id = ?", (user_id,))
-        normalized_algs = list(dict.fromkeys([normalize_allergen(a) for a in req.allergies if a.strip()]))
-        for alg_name in normalized_algs:
+        for alg_name in list(dict.fromkeys([normalize_allergen(a) for a in req.allergies if a.strip()])):
             row = conn.execute("SELECT id FROM Allergy WHERE name = ?", (alg_name,)).fetchone()
-            if row:
-                alg_id = row["id"]
-            else:
-                cur = conn.execute("INSERT INTO Allergy (name) VALUES (?)", (alg_name,))
-                alg_id = cur.lastrowid
-            conn.execute("INSERT OR IGNORE INTO UserAllergy (user_id, allergy_id, info_date) VALUES (?, ?, date('now'))",
-                         (user_id, alg_id))
+            alg_id = row["id"] if row else conn.execute("INSERT INTO Allergy (name) VALUES (?)", (alg_name,)).lastrowid
+            conn.execute("INSERT OR IGNORE INTO UserAllergy (user_id, allergy_id, info_date) VALUES (?, ?, date('now'))", (user_id, alg_id))
 
         conn.execute("DELETE FROM UserMenuPreference WHERE user_id = ?", (user_id,))
         for fav_name in req.favs:
@@ -336,24 +205,15 @@ def update_user_profile(user_id: str, req: UserUpdateRequest):
             if not clean_fav:
                 continue
             row = conn.execute("SELECT id FROM Menu WHERE name = ?", (clean_fav,)).fetchone()
-            if row:
-                menu_id = row["id"]
-            else:
-                cur = conn.execute("INSERT INTO Menu (name, price) VALUES (?, 0)", (clean_fav,))
-                menu_id = cur.lastrowid
-            conn.execute("INSERT OR IGNORE INTO UserMenuPreference (user_id, menu_id) VALUES (?, ?)",
-                         (user_id, menu_id))
+            menu_id = row["id"] if row else conn.execute("INSERT INTO Menu (name, price) VALUES (?, 0)", (clean_fav,)).lastrowid
+            conn.execute("INSERT OR IGNORE INTO UserMenuPreference (user_id, menu_id) VALUES (?, ?)", (user_id, menu_id))
 
         if req.hint:
-            conn.execute("""
-                INSERT INTO UserMemory (user_id, timestamp, memory_topic, memory_content)
-                VALUES (?, datetime('now'), '接客カルテ更新', ?)
-            """, (user_id, req.hint))
-
+            conn.execute("INSERT INTO UserMemory (user_id, timestamp, memory_topic, memory_content) VALUES (?, datetime('now'), 'カルテ更新', ?)", (user_id, req.hint))
         conn.commit()
     return {"status": "updated"}
 
-# 10. 論理削除・復元・物理削除
+# 5b. カルテのごみ箱 / 復元 / 完全削除（app.js が呼ぶが以前は未実装だった）
 @app.put("/api/users/{user_id}/trash")
 def trash_user(user_id: str):
     with get_db() as conn:
@@ -375,6 +235,55 @@ def purge_user(user_id: str):
         conn.commit()
     return {"status": "purged"}
 
+# 6. 配席セッション
+@app.post("/api/sessions/assign")
+def assign_session(req: AssignRequest):
+    now = datetime.now().strftime("%H:%M")
+    start_label = f"{now} 入店"
+    with get_db() as conn:
+        conn.execute("INSERT INTO TableSession (id, datetime, table_id, start_datetime, end_datetime, conversation_status) VALUES (?, ?, ?, ?, '利用中', 0)",
+                     (req.session_id, now, req.table_id, start_label))
+        for uid in req.user_ids:
+            conn.execute("INSERT INTO TableSessionMembers (table_session_id, user_id) VALUES (?, ?)", (req.session_id, uid))
+            conn.execute("UPDATE UserData SET last_visit = datetime('now') WHERE id = ?", (uid,))
+        conn.commit()
+    return {"status": "assigned"}
+
+# 6b. 配席の取り消し（「直前の配席を取り消す」用）
+@app.delete("/api/sessions/{session_id}")
+def cancel_session(session_id: str):
+    with get_db() as conn:
+        conn.execute("DELETE FROM TableSession WHERE id = ?", (session_id,))
+        conn.commit()
+    return {"status": "cancelled"}
+
+# 6c. 予約席 ➔ 着席（予約中 → 利用中）
+@app.post("/api/sessions/{session_id}/seat")
+def seat_reserved(session_id: str):
+    start_label = datetime.now().strftime("%H:%M 入店")
+    with get_db() as conn:
+        conn.execute("UPDATE TableSession SET end_datetime = '利用中', start_datetime = ? WHERE id = ?", (start_label, session_id))
+        conn.commit()
+    return {"status": "seated"}
+
+# 7. 会計処理（利用中 ➔ 会計中）
+@app.post("/api/sessions/{session_id}/bill")
+def bill_session(session_id: str):
+    with get_db() as conn:
+        conn.execute("UPDATE TableSession SET end_datetime = '会計中' WHERE id = ?", (session_id,))
+        conn.commit()
+    return {"status": "billing"}
+
+# 8. 退店処理（会計中/利用中 ➔ 退店して空席化）
+@app.post("/api/sessions/{session_id}/checkout")
+def checkout_session(session_id: str):
+    now_label = datetime.now().strftime("%H:%M 退店")
+    with get_db() as conn:
+        conn.execute("UPDATE TableSession SET end_datetime = ? WHERE id = ?", (now_label, session_id))
+        conn.commit()
+    return {"status": "checked_out"}
+
+# 9. 静的配信
 @app.get("/")
 def serve_index():
     return FileResponse("index.html")
