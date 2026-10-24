@@ -50,6 +50,9 @@ function normalizeAllergenUI(name) {
 }
 
 let DB = {};
+let MENU = [];
+let ORDERS = {};
+window.pickerOpen = false;
 let TABLES = {};
 
 // 待合リストを賑やかに（3組待ち）
@@ -70,12 +73,13 @@ async function initApp() {
   setupDrop();
   initResizers();
   try { waitingQueue = await (await fetch(`${API_BASE}/waiting-queue`)).json(); } catch (e) { console.error(e); }
+  try { MENU = await (await fetch(`${API_BASE}/menu`)).json(); } catch (e) { console.error(e); }
   await loadDatabase();
   renderWaiting();
   showDetail(1);
 
   setInterval(async () => {
-    if (editingUserId) return;
+    if (editingUserId || window.pickerOpen) return;
     await loadDatabase();
     if (selectedTable) showDetail(selectedTable);
   }, 10000);
@@ -219,12 +223,14 @@ function renderWaiting() {
   const container = document.getElementById('waiting-list');
   document.getElementById('wait-count').innerText = `${waitingQueue.length}組`;
 
-  let active = 0, empty = 0;
+  let active = 0, empty = 0, reserved = 0;
   Object.values(TABLES).forEach(t => {
     if (['active','speaking','billing'].includes(t.type)) active++;
     if (t.type === 'empty') empty++;
+    if (t.type === 'reserved') reserved++;
   });
   document.getElementById('active-badge').innerText = `稼働：${active}卓`;
+  document.getElementById('reserved-badge').innerText = `予約：${reserved}卓`;
   document.getElementById('empty-badge').innerText  = `空席：${empty}卓`;
 
   if (!waitingQueue.length) {
@@ -288,6 +294,7 @@ function handleDeleteQueue(event, queueId, guestName) {
 function showWaitingDetail(queueId) {
   selectedQueueId = queueId;
   selectedTable = null;
+  hideFooter();
 
   document.querySelectorAll('.seat-card').forEach(el => el.classList.remove('active'));
   renderWaiting();
@@ -385,9 +392,17 @@ async function undoLast() {
 async function billTable(tableId) {
   const t = TABLES[tableId];
   if (!t?.sessionId) return;
-  try { await fetch(`${API_BASE}/sessions/${t.sessionId}/bill`, { method: "POST" }); } catch (e) { console.error(e); }
-  await loadDatabase();
-  showDetail(tableId);
+  const doBill = async () => {
+    try { await fetch(`${API_BASE}/sessions/${t.sessionId}/bill`, { method: "POST" }); } catch (e) { console.error(e); }
+    await loadDatabase();
+    showDetail(tableId);
+  };
+  const pending = (ORDERS[t.sessionId]?.items || []).filter(i => i.status === '注文中').length;
+  if (pending > 0) {
+    showConfirmModal("未提供の注文があります", `「注文中」のまま ${pending} 品が残っています。このままお会計に進みますか？`, "お会計へ", false, doBill);
+  } else {
+    await doBill();
+  }
 }
 
 async function seatReserved(tableId) {
@@ -404,7 +419,7 @@ async function checkoutTable(tableId) {
 
   showConfirmModal(
     "お会計・退店処理",
-    `${tableId}番テーブルのお会計を完了し、空席に戻しますか？`,
+    `${tableId}番テーブルのお会計（${yen(ORDERS[t.sessionId]?.total ?? 0)}）を完了し、空席に戻しますか？`,
     "お会計を完了",
     false,
     async () => {
@@ -424,6 +439,8 @@ async function checkoutTable(tableId) {
 function showDetail(id) {
   selectedTable = id;
   selectedQueueId = null;
+  window.pickerOpen = false;
+  hideFooter();
 
   document.querySelectorAll('.seat-card').forEach(el => el.classList.remove('active'));
   document.getElementById(`tbl-${id}`)?.classList.add('active');
@@ -456,12 +473,7 @@ function showDetail(id) {
     return;
   }
 
-  actions.style.display = 'flex';
-  actions.innerHTML = `
-    <div class="action-btn-row">
-      ${t.type === 'billing' ? '' : `<button class="btn btn-bill" style="flex:1;" onclick="billTable(${id})">お会計に進む（会計中へ）</button>`}
-      <button class="btn btn-checkout" style="flex:1;" onclick="checkoutTable(${id})">🧾 会計・退店処理</button>
-    </div>`;
+  actions.style.display = 'none';
 
   document.getElementById('d-sub').innerText = `滞在：${t.stayTime || '利用中'}（${t.guestCount || t.userIds.length}名様）`;
 
@@ -496,7 +508,102 @@ function showDetail(id) {
           </div>`;
       }).join('');
 
-  content.innerHTML = summaryHtml + guestsHtml;
+  const ordersHtml = `
+    <div class="orders-box">
+      <div class="orders-head"><span>注文の状況</span>
+        ${t.type === 'billing' ? '' : `<button class="btn btn-secondary btn-xs" onclick="toggleMenuPicker()">＋ 追加</button>`}
+      </div>
+      <div class="menu-grid" id="menu-picker" style="display:none;">
+        ${MENU.map(m => `<button class="menu-btn" onclick="addOrder(${m.id}, ${id})">${m.name}<small>${yen(taxIn(m.price))}</small></button>`).join('')}
+      </div>
+      <div id="orders-list"></div>
+    </div>`;
+
+  content.innerHTML = ordersHtml + summaryHtml + guestsHtml;
+  if (ORDERS[t.sessionId]) renderOrders(id);
+  refreshOrders(id);
+}
+
+/* ── 注文・会計 ── */
+const yen = n => `¥${Number(n).toLocaleString('ja-JP')}`;
+const taxIn = p => Math.round(p * 1.1);
+
+function hideFooter() {
+  const f = document.getElementById('d-footer');
+  f.style.display = 'none';
+  f.innerHTML = '';
+}
+
+async function refreshOrders(tableId) {
+  const t = TABLES[tableId];
+  if (!t?.sessionId) return;
+  try {
+    ORDERS[t.sessionId] = await (await fetch(`${API_BASE}/sessions/${t.sessionId}/orders`)).json();
+    if (selectedTable === tableId) renderOrders(tableId);
+  } catch (e) { console.error("注文取得エラー:", e); }
+}
+
+function renderOrders(tableId) {
+  const t = TABLES[tableId];
+  const data = ORDERS[t?.sessionId];
+  const box = document.getElementById('orders-list');
+  if (!data || !box) return;
+  box.innerHTML = data.items.length ? data.items.map(i => `
+    <div class="order-row">
+      <span class="order-name">${i.name}</span>
+      <span class="order-qty">×${i.qty}</span>
+      <span class="order-price">${yen(taxIn(i.unit_price * i.qty))}</span>
+      ${i.status === '提供済'
+        ? `<span class="order-st served">提供済</span>`
+        : `<button class="order-st pending" onclick="serveOrder(${i.id}, ${tableId})">注文中 → 提供</button>
+           <button class="order-x" title="取り消し" onclick="cancelOrder(${i.id}, ${tableId})">✕</button>`}
+    </div>`).join('') : `<div class="order-empty">注文はまだありません</div>`;
+  renderFooter(tableId);
+}
+
+function renderFooter(tableId) {
+  const t = TABLES[tableId];
+  const d = ORDERS[t?.sessionId];
+  const f = document.getElementById('d-footer');
+  if (!d || !t || t.type === 'empty' || t.type === 'reserved') { hideFooter(); return; }
+  const billing = t.type === 'billing';
+  f.style.display = 'flex';
+  f.innerHTML = `
+    <div class="df-total">
+      <div class="df-label">合計金額 <small>(税込)</small></div>
+      <div class="df-sum">${yen(d.total)}</div>
+      <div class="df-tax">うち消費税 ${yen(d.tax)}</div>
+    </div>
+    <button class="btn btn-primary df-btn" onclick="${billing ? `checkoutTable(${tableId})` : `billTable(${tableId})`}">${billing ? '会計完了・退店' : 'お会計へ'}</button>`;
+}
+
+function toggleMenuPicker() {
+  const el = document.getElementById('menu-picker');
+  const open = el.style.display === 'none';
+  el.style.display = open ? 'grid' : 'none';
+  window.pickerOpen = open;
+}
+
+async function addOrder(menuId, tableId) {
+  const t = TABLES[tableId];
+  if (!t?.sessionId) return;
+  try {
+    await fetch(`${API_BASE}/sessions/${t.sessionId}/orders`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ menu_id: menuId, qty: 1 })
+    });
+  } catch (e) { console.error(e); }
+  await refreshOrders(tableId);
+}
+
+async function serveOrder(orderId, tableId) {
+  try { await fetch(`${API_BASE}/orders/${orderId}/serve`, { method: "PUT" }); } catch (e) { console.error(e); }
+  await refreshOrders(tableId);
+}
+
+async function cancelOrder(orderId, tableId) {
+  try { await fetch(`${API_BASE}/orders/${orderId}`, { method: "DELETE" }); } catch (e) { console.error(e); }
+  await refreshOrders(tableId);
 }
 
 function openGuest(userId) {

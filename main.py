@@ -2,7 +2,7 @@ import sqlite3
 import time
 from datetime import datetime
 from typing import List, Optional
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -282,6 +282,88 @@ def checkout_session(session_id: str):
         conn.execute("UPDATE TableSession SET end_datetime = ? WHERE id = ?", (now_label, session_id))
         conn.commit()
     return {"status": "checked_out"}
+
+# ── 注文・会計（OrderItem テーブルは起動時に自動作成。既存DBはそのまま使えます） ──
+TAX_RATE = 0.10  # Menu.price は税抜価格として扱う
+
+class OrderAddRequest(BaseModel):
+    menu_id: int
+    qty: int = 1
+
+def ensure_order_table():
+    with get_db() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS OrderItem (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id VARCHAR(64) NOT NULL,
+                menu_id INTEGER,
+                name VARCHAR(64) NOT NULL,
+                unit_price INTEGER NOT NULL,
+                qty INTEGER NOT NULL DEFAULT 1,
+                status VARCHAR(8) NOT NULL DEFAULT '注文中',
+                created_at DATETIME,
+                FOREIGN KEY (session_id) REFERENCES TableSession(id) ON DELETE CASCADE
+            )""")
+        # デモ用：注文が1件も無いときだけ、稼働中の卓にサンプル注文を入れる
+        if conn.execute("SELECT COUNT(*) FROM OrderItem").fetchone()[0] == 0:
+            demo = {"sess-001": [(4, 1, "提供済"), (1, 1, "提供済"), (5, 1, "注文中")],
+                    "sess-002": [(6, 1, "提供済")],
+                    "sess-003": [(3, 1, "提供済"), (4, 1, "注文中")],
+                    "sess-004": [(1, 1, "提供済"), (2, 1, "提供済"), (5, 2, "提供済")],
+                    "sess-005": [(2, 1, "提供済"), (6, 1, "提供済")]}
+            for sid, rows in demo.items():
+                if not conn.execute("SELECT 1 FROM TableSession WHERE id = ?", (sid,)).fetchone():
+                    continue
+                for mid, qty, st in rows:
+                    m = conn.execute("SELECT name, price FROM Menu WHERE id = ?", (mid,)).fetchone()
+                    if m:
+                        conn.execute("INSERT INTO OrderItem (session_id, menu_id, name, unit_price, qty, status, created_at) VALUES (?,?,?,?,?,?,datetime('now'))",
+                                     (sid, mid, m["name"], m["price"], qty, st))
+        conn.commit()
+
+ensure_order_table()
+
+def order_summary(conn, session_id: str):
+    items = [dict(r) for r in conn.execute("SELECT * FROM OrderItem WHERE session_id = ? ORDER BY id", (session_id,)).fetchall()]
+    subtotal = sum(i["unit_price"] * i["qty"] for i in items)
+    total = round(subtotal * (1 + TAX_RATE))
+    return {"items": items, "subtotal": subtotal, "tax": total - subtotal, "total": total}
+
+@app.get("/api/menu")
+def get_menu():
+    with get_db() as conn:
+        rows = conn.execute("SELECT id, name, price FROM Menu WHERE availability = 1 AND stock = 1 AND price > 0 ORDER BY id").fetchall()
+        return [dict(r) for r in rows]
+
+@app.get("/api/sessions/{session_id}/orders")
+def get_orders(session_id: str):
+    with get_db() as conn:
+        return order_summary(conn, session_id)
+
+@app.post("/api/sessions/{session_id}/orders")
+def add_order(session_id: str, req: OrderAddRequest):
+    with get_db() as conn:
+        m = conn.execute("SELECT name, price FROM Menu WHERE id = ?", (req.menu_id,)).fetchone()
+        if not m:
+            raise HTTPException(status_code=404, detail="menu not found")
+        conn.execute("INSERT INTO OrderItem (session_id, menu_id, name, unit_price, qty, status, created_at) VALUES (?,?,?,?,?,'注文中',datetime('now'))",
+                     (session_id, req.menu_id, m["name"], m["price"], max(req.qty, 1)))
+        conn.commit()
+        return order_summary(conn, session_id)
+
+@app.put("/api/orders/{order_id}/serve")
+def serve_order(order_id: int):
+    with get_db() as conn:
+        conn.execute("UPDATE OrderItem SET status = '提供済' WHERE id = ?", (order_id,))
+        conn.commit()
+    return {"status": "served"}
+
+@app.delete("/api/orders/{order_id}")
+def cancel_order(order_id: int):
+    with get_db() as conn:
+        conn.execute("DELETE FROM OrderItem WHERE id = ? AND status = '注文中'", (order_id,))
+        conn.commit()
+    return {"status": "cancelled"}
 
 # 9. 静的配信
 @app.get("/")
