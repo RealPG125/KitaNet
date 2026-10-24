@@ -20,39 +20,21 @@ app.add_middleware(
 
 DB_FILE = "restaurant.db"
 
-# 表記ゆれ辞書
 ALLERGEN_SYNONYMS = {
-    "エビ": "えび",
-    "海老": "えび",
-    "カニ": "かに",
-    "蟹": "かに",
-    "ソバ": "そば",
-    "蕎麦": "そば",
+    "エビ": "えび", "海老": "えび",
+    "カニ": "かに", "蟹": "かに",
+    "ソバ": "そば", "蕎麦": "そば",
     "コムギ": "小麦",
-    "たまご": "卵",
-    "タマゴ": "卵",
-    "玉子": "卵",
-    "鶏卵": "卵",
-    "乳製品": "乳",
-    "ミルク": "乳",
-    "牛乳": "乳",
-    "落花生": "落花生（ピーナッツ）",
-    "ピーナッツ": "落花生（ピーナッツ）",
-    "クルミ": "くるみ",
-    "胡桃": "くるみ",
-    "サケ": "さけ",
-    "鮭": "さけ",
-    "サーモン": "さけ",
-    "サバ": "さば",
-    "鯖": "さば",
-    "イカ": "いか",
-    "烏賊": "いか",
-    "アワビ": "あわび",
-    "鮑": "あわび",
-    "ゴマ": "ごま",
-    "胡麻": "ごま",
-    "ヤマイモ": "やまいも",
-    "山芋": "やまいも",
+    "たまご": "卵", "タマゴ": "卵", "玉子": "卵", "鶏卵": "卵",
+    "乳製品": "乳", "ミルク": "乳", "牛乳": "乳",
+    "落花生": "落花生（ピーナッツ）", "ピーナッツ": "落花生（ピーナッツ）",
+    "クルミ": "くるみ", "胡桃": "くるみ",
+    "サケ": "さけ", "鮭": "さけ", "サーモン": "さけ",
+    "サバ": "さば", "鯖": "さば",
+    "イカ": "いか", "烏賊": "いか",
+    "アワビ": "あわび", "鮑": "あわび",
+    "ゴマ": "ごま", "胡麻": "ごま",
+    "ヤマイモ": "やまいも", "山芋": "やまいも",
     "キウイ": "キウイフルーツ",
 }
 
@@ -89,6 +71,7 @@ class AssignRequest(BaseModel):
     table_id: int
     user_ids: List[str]
     session_id: str
+    waiting_session_id: Optional[str] = None
 
 # 1. 顧客一覧の取得
 @app.get("/api/users")
@@ -116,7 +99,7 @@ def get_all_users():
                 SELECT ts.id as sId, ts.table_id as tId, ts.start_datetime as [in], ts.end_datetime as [out]
                 FROM TableSessionMembers tsm
                 JOIN TableSession ts ON tsm.table_session_id = ts.id
-                WHERE tsm.user_id = ?
+                WHERE tsm.user_id = ? AND ts.table_id > 0
                 ORDER BY ts.start_datetime DESC
             """, (uid,)).fetchall()
 
@@ -134,16 +117,18 @@ def get_all_users():
             }
         return result
 
-# 2. フロア全体の稼働状況
+# 2. フロア全体の稼働状況（1〜10番卓）
 @app.get("/api/floor-status")
 def get_floor_status():
     with get_db() as conn:
         active_sessions = conn.execute("""
             SELECT * FROM TableSession 
-            WHERE end_datetime IS NULL 
+            WHERE table_id > 0 AND (
+               end_datetime IS NULL 
                OR end_datetime = '利用中' 
                OR end_datetime = '会計中' 
                OR end_datetime = '予約中'
+            )
         """).fetchall()
 
         tables_data = {}
@@ -192,7 +177,7 @@ def get_floor_status():
                 "sessionId": s["id"],
                 "type": s_type,
                 "status": s["end_datetime"] or "利用中",
-                "stayTime": s["end_datetime"] if not is_reserved else None,
+                "stayTime": s["start_datetime"] if not is_reserved else None,
                 "reserveTime": s["start_datetime"] if is_reserved else None,
                 "guestCount": max(len(u_ids), 1),
                 "userIds": u_ids,
@@ -202,12 +187,37 @@ def get_floor_status():
 
         return tables_data
 
-# 3. 新規グループ受付（アレルゲンの自動正規化）
+# 3. 待合受付リストの取得（table_id = 0 のセッション）
+@app.get("/api/waiting-queue")
+def get_waiting_queue():
+    with get_db() as conn:
+        sessions = conn.execute("""
+            SELECT * FROM TableSession 
+            WHERE table_id = 0 AND (end_datetime = '待合中' OR end_datetime IS NULL)
+            ORDER BY datetime ASC
+        """).fetchall()
+
+        queue = []
+        for s in sessions:
+            members = conn.execute("""
+                SELECT user_id FROM TableSessionMembers WHERE table_session_id = ?
+            """, (s["id"],)).fetchall()
+            u_ids = [m["user_id"] for m in members]
+            queue.append({
+                "queueId": s["id"],
+                "guestsCount": max(len(u_ids), 1),
+                "userIds": u_ids,
+                "time": s["datetime"]
+            })
+        return queue
+
+# 4. 新規グループ受付（table_id = 0 としてDB永続化）
 @app.post("/api/register-group")
 def register_group(req: GroupRegisterRequest):
     created_user_ids = []
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
     today_date = datetime.now().strftime("%Y-%m-%d")
+    queue_session_id = f"wait-{int(time.time()*1000)}"
 
     with get_db() as conn:
         for idx, u in enumerate(req.users):
@@ -243,17 +253,71 @@ def register_group(req: GroupRegisterRequest):
                     """, (uid, now_str, u.hint))
 
             created_user_ids.append(uid)
+
+        # 0番テーブル（受付セッション）として登録
+        conn.execute("""
+            INSERT INTO TableSession (id, datetime, table_id, start_datetime, end_datetime, conversation_status)
+            VALUES (?, ?, 0, ?, '待合中', 0)
+        """, (queue_session_id, now_str, now_str))
+
+        for uid in created_user_ids:
+            conn.execute("INSERT INTO TableSessionMembers (table_session_id, user_id) VALUES (?, ?)", 
+                         (queue_session_id, uid))
+
         conn.commit()
 
-    return {"status": "success", "user_ids": created_user_ids}
+    return {"status": "success", "session_id": queue_session_id, "user_ids": created_user_ids}
 
-# 4. カルテ更新（アレルゲンの正規化＆重複防止）
+# 5. 配席セッション作成（0番卓から本配席へ切り替え）
+@app.post("/api/sessions/assign")
+def assign_session(req: AssignRequest):
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    with get_db() as conn:
+        # 待合セッションが存在する場合は「案内済み」に更新
+        if req.waiting_session_id:
+            conn.execute("UPDATE TableSession SET end_datetime = '案内済' WHERE id = ?", (req.waiting_session_id,))
+
+        conn.execute("""
+            INSERT INTO TableSession (id, datetime, table_id, start_datetime, end_datetime, conversation_status)
+            VALUES (?, ?, ?, ?, '利用中', 0)
+        """, (req.session_id, now, req.table_id, now))
+        
+        for uid in req.user_ids:
+            conn.execute("INSERT INTO TableSessionMembers (table_session_id, user_id) VALUES (?, ?)", (req.session_id, uid))
+            conn.execute("UPDATE UserData SET last_visit = ? WHERE id = ?", (now, uid))
+        conn.commit()
+    return {"status": "assigned"}
+
+# 6. 会計処理（利用中 ➔ 会計中）
+@app.post("/api/sessions/{session_id}/bill")
+def bill_session(session_id: str):
+    with get_db() as conn:
+        conn.execute("UPDATE TableSession SET end_datetime = '会計中' WHERE id = ?", (session_id,))
+        conn.commit()
+    return {"status": "billing"}
+
+# 7. 退店処理（会計中 ➔ 退店・空席化）
+@app.post("/api/sessions/{session_id}/checkout")
+def checkout_session(session_id: str):
+    now = datetime.now().strftime("%H:%M 退店")
+    with get_db() as conn:
+        conn.execute("UPDATE TableSession SET end_datetime = ? WHERE id = ?", (now, session_id))
+        conn.commit()
+    return {"status": "checked_out"}
+
+# 8. 待合からの削除
+@app.delete("/api/waiting-queue/{session_id}")
+def delete_waiting_queue(session_id: str):
+    with get_db() as conn:
+        conn.execute("UPDATE TableSession SET end_datetime = '取消' WHERE id = ?", (session_id,))
+        conn.commit()
+    return {"status": "cancelled"}
+
+# 9. カルテ更新
 @app.put("/api/users/{user_id}")
 def update_user_profile(user_id: str, req: UserUpdateRequest):
     with get_db() as conn:
         conn.execute("UPDATE UserData SET name = ?, region = ? WHERE id = ?", (req.name, req.region, user_id))
-
-        # アレルギー更新
         conn.execute("DELETE FROM UserAllergy WHERE user_id = ?", (user_id,))
         normalized_algs = list(dict.fromkeys([normalize_allergen(a) for a in req.allergies if a.strip()]))
         for alg_name in normalized_algs:
@@ -266,7 +330,6 @@ def update_user_profile(user_id: str, req: UserUpdateRequest):
             conn.execute("INSERT OR IGNORE INTO UserAllergy (user_id, allergy_id, info_date) VALUES (?, ?, date('now'))",
                          (user_id, alg_id))
 
-        # 好物更新
         conn.execute("DELETE FROM UserMenuPreference WHERE user_id = ?", (user_id,))
         for fav_name in req.favs:
             clean_fav = fav_name.strip()
@@ -290,62 +353,27 @@ def update_user_profile(user_id: str, req: UserUpdateRequest):
         conn.commit()
     return {"status": "updated"}
 
-# 5. ごみ箱に入れる（論理削除）
+# 10. 論理削除・復元・物理削除
 @app.put("/api/users/{user_id}/trash")
 def trash_user(user_id: str):
     with get_db() as conn:
         conn.execute("UPDATE UserData SET is_deleted = 1 WHERE id = ?", (user_id,))
         conn.commit()
-    return {"status": "trashed", "user_id": user_id}
+    return {"status": "trashed"}
 
-# 6. ごみ箱から復元する
 @app.put("/api/users/{user_id}/restore")
 def restore_user(user_id: str):
     with get_db() as conn:
         conn.execute("UPDATE UserData SET is_deleted = 0 WHERE id = ?", (user_id,))
         conn.commit()
-    return {"status": "restored", "user_id": user_id}
+    return {"status": "restored"}
 
-# 7. 本当の削除（物理削除）
 @app.delete("/api/users/{user_id}/purge")
 def purge_user(user_id: str):
     with get_db() as conn:
         conn.execute("DELETE FROM UserData WHERE id = ?", (user_id,))
         conn.commit()
-    return {"status": "purged", "user_id": user_id}
-
-# 8. 配席セッション作成
-@app.post("/api/sessions/assign")
-def assign_session(req: AssignRequest):
-    now = datetime.now().strftime("%Y-%m-%d %H:%M")
-    with get_db() as conn:
-        conn.execute("""
-            INSERT INTO TableSession (id, datetime, table_id, start_datetime, end_datetime, conversation_status)
-            VALUES (?, ?, ?, ?, '利用中', 0)
-        """, (req.session_id, now, req.table_id, now))
-        
-        for uid in req.user_ids:
-            conn.execute("INSERT INTO TableSessionMembers (table_session_id, user_id) VALUES (?, ?)", (req.session_id, uid))
-            conn.execute("UPDATE UserData SET last_visit = ? WHERE id = ?", (now, uid))
-        conn.commit()
-    return {"status": "assigned"}
-
-# 9. 会計処理
-@app.post("/api/sessions/{session_id}/bill")
-def bill_session(session_id: str):
-    with get_db() as conn:
-        conn.execute("UPDATE TableSession SET end_datetime = '会計中' WHERE id = ?", (session_id,))
-        conn.commit()
-    return {"status": "billing"}
-
-# 10. 退店処理
-@app.post("/api/sessions/{session_id}/checkout")
-def checkout_session(session_id: str):
-    now = datetime.now().strftime("%H:%M 退店")
-    with get_db() as conn:
-        conn.execute("UPDATE TableSession SET end_datetime = ? WHERE id = ?", (now, session_id))
-        conn.commit()
-    return {"status": "checked_out"}
+    return {"status": "purged"}
 
 @app.get("/")
 def serve_index():
@@ -355,4 +383,4 @@ app.mount("/", StaticFiles(directory="."), name="static")
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
