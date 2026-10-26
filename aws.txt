@@ -1,0 +1,4 @@
+1. cd Desktop 
+2. ssh -i "tabusaleadingedge.pem" ubuntu@ec2-57-180-15-226.ap-northeast-1.compute.amazonaws.com
+3. cd voice-app/
+4. ls

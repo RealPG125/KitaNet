@@ -1,3 +1,4 @@
+import json
 import sqlite3
 import time
 from datetime import datetime
@@ -56,6 +57,7 @@ class UserUpdateRequest(BaseModel):
     hint: Optional[str] = ""
     allergies: List[str] = []
     favs: List[str] = []
+    tendencies: List[str] = []
 
 class AssignRequest(BaseModel):
     table_id: int
@@ -80,7 +82,7 @@ def get_all_users():
         for u in users:
             uid = u["id"]
             algs = conn.execute("SELECT a.name FROM UserAllergy ua JOIN Allergy a ON ua.allergy_id = a.id WHERE ua.user_id = ?", (uid,)).fetchall()
-            favs = conn.execute("SELECT m.name FROM UserMenuPreference ump JOIN Menu m ON ump.menu_id = m.id WHERE ump.user_id = ?", (uid,)).fetchall()
+            favs = conn.execute("SELECT m.name, ump.from_llm FROM UserMenuPreference ump JOIN Menu m ON ump.menu_id = m.id WHERE ump.user_id = ?", (uid,)).fetchall()
             mem = conn.execute("SELECT memory_content FROM UserMemory WHERE user_id = ? ORDER BY id DESC LIMIT 1", (uid,)).fetchone()
             sess = conn.execute("""
                 SELECT ts.id as sId, ts.table_id as tId, ts.start_datetime as [in], ts.end_datetime as [out]
@@ -97,7 +99,8 @@ def get_all_users():
                 "last": u["last_visit"] or "-",
                 "is_deleted": bool(u["is_deleted"]),
                 "allergies": [a["name"] for a in algs],
-                "favs": [f["name"] for f in favs],
+                "favs": [f["name"] for f in favs if not f["from_llm"]],
+                "tendencies": [f["name"] for f in favs if f["from_llm"]],
                 "hint": mem["memory_content"] if mem else "",
                 "sessions": [dict(s) for s in sess]
             }
@@ -127,6 +130,9 @@ def get_floor_status():
             members = conn.execute("SELECT user_id FROM TableSessionMembers WHERE table_session_id = ?", (s["id"],)).fetchall()
             u_ids = [m["user_id"] for m in members]
 
+            info = conn.execute("SELECT guest_name, party_size, reserve_time FROM ReservationInfo WHERE session_id = ?", (s["id"],)).fetchone()
+            first = conn.execute("SELECT name FROM UserData WHERE id = ?", (u_ids[0],)).fetchone() if u_ids else None
+
             conv = conn.execute("SELECT memory_content FROM ConversationMemory WHERE table_session_id = ? ORDER BY timestamp DESC LIMIT 1", (s["id"],)).fetchone()
             summary_text = conv["memory_content"] if conv else ""
 
@@ -147,9 +153,12 @@ def get_floor_status():
                 "sessionId": s["id"],
                 "type": s_type,
                 "status": s["end_datetime"],
-                "stayTime": s["start_datetime"] if not is_reserved else None,
+                "stayTime": stay_label(s["start_datetime"]) if not is_reserved else None,
                 "reserveTime": s["start_datetime"] if is_reserved else None,
-                "guestCount": max(len(u_ids), 1),
+                "reserveHM": ((info["reserve_time"] if info else (s["start_datetime"] or "").split(" ")[0]) if is_reserved else None),
+                "reserveName": (info["guest_name"] if info else (first["name"] if first else None)),
+                "groupName": info["guest_name"] if info else None,
+                "guestCount": info["party_size"] if info else max(len(u_ids), 1),
                 "userIds": u_ids,
                 "hasSpoken": bool(summary_text) or is_speaking,
                 "summary": summary_text
@@ -200,13 +209,13 @@ def update_user_profile(user_id: str, req: UserUpdateRequest):
             conn.execute("INSERT OR IGNORE INTO UserAllergy (user_id, allergy_id, info_date) VALUES (?, ?, date('now'))", (user_id, alg_id))
 
         conn.execute("DELETE FROM UserMenuPreference WHERE user_id = ?", (user_id,))
-        for fav_name in req.favs:
-            clean_fav = fav_name.strip()
-            if not clean_fav:
-                continue
-            row = conn.execute("SELECT id FROM Menu WHERE name = ?", (clean_fav,)).fetchone()
-            menu_id = row["id"] if row else conn.execute("INSERT INTO Menu (name, price) VALUES (?, 0)", (clean_fav,)).lastrowid
-            conn.execute("INSERT OR IGNORE INTO UserMenuPreference (user_id, menu_id) VALUES (?, ?)", (user_id, menu_id))
+        favs = [f.strip() for f in req.favs if f.strip()]
+        tends = [t.strip() for t in req.tendencies if t.strip() and t.strip() not in favs]
+        for names, flag in ((favs, 0), (tends, 1)):
+            for nm in dict.fromkeys(names):
+                row = conn.execute("SELECT id FROM Menu WHERE name = ?", (nm,)).fetchone()
+                menu_id = row["id"] if row else conn.execute("INSERT INTO Menu (name, price) VALUES (?, 0)", (nm,)).lastrowid
+                conn.execute("INSERT OR IGNORE INTO UserMenuPreference (user_id, menu_id, from_llm) VALUES (?, ?, ?)", (user_id, menu_id, flag))
 
         if req.hint:
             conn.execute("INSERT INTO UserMemory (user_id, timestamp, memory_topic, memory_content) VALUES (?, datetime('now'), 'カルテ更新', ?)", (user_id, req.hint))
@@ -239,7 +248,7 @@ def purge_user(user_id: str):
 @app.post("/api/sessions/assign")
 def assign_session(req: AssignRequest):
     now = datetime.now().strftime("%H:%M")
-    start_label = f"{now} 入店"
+    start_label = datetime.now().strftime("%Y-%m-%d %H:%M")
     with get_db() as conn:
         conn.execute("INSERT INTO TableSession (id, datetime, table_id, start_datetime, end_datetime, conversation_status) VALUES (?, ?, ?, ?, '利用中', 0)",
                      (req.session_id, now, req.table_id, start_label))
@@ -260,7 +269,7 @@ def cancel_session(session_id: str):
 # 6c. 予約席 ➔ 着席（予約中 → 利用中）
 @app.post("/api/sessions/{session_id}/seat")
 def seat_reserved(session_id: str):
-    start_label = datetime.now().strftime("%H:%M 入店")
+    start_label = datetime.now().strftime("%Y-%m-%d %H:%M")
     with get_db() as conn:
         conn.execute("UPDATE TableSession SET end_datetime = '利用中', start_datetime = ? WHERE id = ?", (start_label, session_id))
         conn.commit()
@@ -277,7 +286,7 @@ def bill_session(session_id: str):
 # 8. 退店処理（会計中/利用中 ➔ 退店して空席化）
 @app.post("/api/sessions/{session_id}/checkout")
 def checkout_session(session_id: str):
-    now_label = datetime.now().strftime("%H:%M 退店")
+    now_label = datetime.now().strftime("%Y-%m-%d %H:%M")
     with get_db() as conn:
         conn.execute("UPDATE TableSession SET end_datetime = ? WHERE id = ?", (now_label, session_id))
         conn.commit()
@@ -364,6 +373,66 @@ def cancel_order(order_id: int):
         conn.execute("DELETE FROM OrderItem WHERE id = ? AND status = '注文中'", (order_id,))
         conn.commit()
     return {"status": "cancelled"}
+
+# ── 予約（名前・人数・時刻。来店しない場合は時間変更・削除できる） ──
+class ReservationReq(BaseModel):
+    table_id: Optional[int] = None
+    name: str
+    party: int = 2
+    reserve_time: str  # "HH:MM"
+
+def ensure_resv_table():
+    with get_db() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS ReservationInfo (
+                session_id VARCHAR(64) PRIMARY KEY,
+                guest_name VARCHAR(64),
+                party_size INTEGER DEFAULT 2,
+                reserve_time VARCHAR(8),
+                FOREIGN KEY (session_id) REFERENCES TableSession(id) ON DELETE CASCADE
+            )""")
+        conn.commit()
+
+ensure_resv_table()
+
+def stay_label(start):
+    """start_datetime が日時なら「HH:MM 入店 (滞在N分)」に整形。旧データの文字列はそのまま返す。"""
+    try:
+        t0 = datetime.strptime(start, "%Y-%m-%d %H:%M")
+        mins = max(int((datetime.now() - t0).total_seconds() // 60), 0)
+        return f"{t0:%H:%M} 入店 (滞在{mins}分)"
+    except Exception:
+        return start
+
+@app.post("/api/reservations")
+def create_reservation(req: ReservationReq):
+    sid = f"resv-{int(time.time()*1000)}"
+    with get_db() as conn:
+        busy = conn.execute("SELECT 1 FROM TableSession WHERE table_id = ? AND end_datetime IN ('利用中','会計中','予約中')", (req.table_id,)).fetchone()
+        if busy:
+            raise HTTPException(status_code=409, detail="table is not empty")
+        conn.execute("INSERT INTO TableSession (id, datetime, table_id, start_datetime, end_datetime, conversation_status) VALUES (?, ?, ?, ?, '予約中', 0)",
+                     (sid, datetime.now().strftime("%H:%M"), req.table_id, f"{req.reserve_time} 予約"))
+        conn.execute("INSERT INTO ReservationInfo (session_id, guest_name, party_size, reserve_time) VALUES (?, ?, ?, ?)",
+                     (sid, req.name.strip() or "予約", max(req.party, 1), req.reserve_time))
+        conn.commit()
+    return {"status": "created", "session_id": sid}
+
+@app.put("/api/reservations/{session_id}")
+def update_reservation(session_id: str, req: ReservationReq):
+    with get_db() as conn:
+        conn.execute("UPDATE TableSession SET start_datetime = ? WHERE id = ? AND end_datetime = '予約中'", (f"{req.reserve_time} 予約", session_id))
+        conn.execute("INSERT OR REPLACE INTO ReservationInfo (session_id, guest_name, party_size, reserve_time) VALUES (?, ?, ?, ?)",
+                     (session_id, req.name.strip() or "予約", max(req.party, 1), req.reserve_time))
+        conn.commit()
+    return {"status": "updated"}
+
+@app.delete("/api/reservations/{session_id}")
+def delete_reservation(session_id: str):
+    with get_db() as conn:
+        conn.execute("DELETE FROM TableSession WHERE id = ? AND end_datetime = '予約中'", (session_id,))
+        conn.commit()
+    return {"status": "deleted"}
 
 # 9. 静的配信
 @app.get("/")
