@@ -8,6 +8,7 @@ import kitanet_helper
 import asyncio
 import torch
 import re
+import boto3
 
 # import websocket
 from faster_whisper import WhisperModel
@@ -25,7 +26,7 @@ from websockets.asyncio.server import serve, ServerConnection
 # device    : "cpu", Nvidia GPU: "cuda"
 
 MAX_BUFFER_DURATION = 20
-SILENCE_THRESHOLD = 0.05
+SILENCE_THRESHOLD = 0.025
 LLM_TRIGGER_SILENCE_DURATION = 1.0
 
 class WhisperObject:
@@ -122,7 +123,7 @@ class Transcriber:
 
     def __init__(self, name: str | None = None, whisperObject: WhisperObject | None = None, enablePlayback: bool = False, beamSize: int = 1, filter: bool = True, useContextual: str | int = 1, splitParts: bool = False, manual: bool = True, diarization: bool = False, useRTC: bool = False, rtcInstance: RTCInstance | None = None, speakerDeviceIndex: int | None = None, speakerSampleRate: int | None = None, micSampleRate: int | None = None, micDeviceIndex: int | None = None, micChunkDuration: int | float = 0.5, micFlatten: bool = True, micDenoise: bool = True, micStem: bool = False):
         if (whisperObject == None):
-            raise ValueError("Error: whisperObject cannot be empty")
+            raise ValueError("whisperObject cannot be empty")
         self.name = name if name != None else f"Transcriber{Transcriber.transcriberID}"
         self.id = Transcriber.transcriberID
         Transcriber.transcriberID += 1
@@ -394,7 +395,7 @@ class TTS:
                         voiceModel = self._voiceShortnames[returnTuple[1]]
                         break
             
-            self._voiceModel = voiceModel
+            self.voiceModel = voiceModel
 
     def invoke_speak(self, text, language: str = "en", speakerInstance: Speaker | None = None):
         audioData = self.generate_voice(text = text, language = language)
@@ -411,7 +412,7 @@ class TTS:
 
     def generate_voice(self, text, language: str = "en"):
         if (self.mode == "edge"):
-            voiceModel = (TTS.edgeTTSLanguageVoiceDict[language] if language in TTS.edgeTTSLanguageVoiceDict else TTS.edgeTTSLanguageVoiceDict["en"]) if self._voiceModel == "auto" else self._voiceModel
+            voiceModel = (TTS.edgeTTSLanguageVoiceDict[language] if language in TTS.edgeTTSLanguageVoiceDict else TTS.edgeTTSLanguageVoiceDict["en"]) if self.voiceModel == "auto" else self.voiceModel
             communicator = self._edgeTTS.Communicate(text, voiceModel)
             
             audioData = b''
@@ -465,7 +466,7 @@ class TTS:
         return instance
 
 class LLM:
-    def __init__(self, model: str = "llama3.2", systemPrompt: str | None = None, enableAudio: bool = True, tts: TTS | None = None, manual: bool = False):
+    def __init__(self, model: str = "llama3.2", systemPrompt: str | None = None, enableAudio: bool = True, tts: TTS | None = None, manual: bool = False, local: bool = True):
         import ollama
         self.ollama = ollama
         self.asyncClient = self.ollama.AsyncClient()
@@ -484,19 +485,23 @@ class LLM:
                     if (0 <= returnTuple[1] < len(modelsList)):
                         model = modelsList[returnTuple[1]].model
                         break
-                    
+
+        self.local = local
         self.model = model
         self.tts = tts
         self._enableAudio = enableAudio
-        self.systemPrompt = "Reply in the same language as the input text. Be a casual chatting company." if systemPrompt == None else systemPrompt
+        self.systemPrompt = "Reply in the same language as the input text. Be a casual chatting company as a friendly chatbot in a restaurant. Users varies between 1 to 8 people, so keep the flow understandable for more people to follow. Reply in text only and do not use any formatting (bold, italic etc), unnecessary symbols, or emojis as the result will be used to invoke speech using a text-to-speech system. Most importantly, reply shortly, 4 sentences maximum if possible" if systemPrompt == None else systemPrompt
         self.response = None
+        self.bedrockClient = boto3.client("bedrock-runtime", region_name = "ap-northeast-1") 
 
     def compile_message(self, message: str | None = None, memory: list[dict[str, str]] = []):
-        compiledMessages = [{"role": "system", "content": self.systemPrompt}]
+        supportsSystemPromptFlag = self.model not in ["openai.gpt-oss-120b-1:0", "openai.gpt-oss-20b-1:0"] 
+
+        compiledMessages = [{"role": "system" if supportsSystemPromptFlag else "user", "content": self.systemPrompt if self.local else [{"text": ("This is a system instruction. Instructions for this conversation: " if supportsSystemPromptFlag else "") + self.systemPrompt}]}]
         for item in memory:
-            compiledMessages.append({"role": "user", "content": item["user"]})
-            compiledMessages.append({"role": "assistant", "content": item["response"]})
-        compiledMessages.append({"role": "user", "content": message})
+            compiledMessages.append({"role": "user", "content": item["user"] if self.local else [{"text": ("User sends the following message: " if supportsSystemPromptFlag else "") + item["user"]}]})
+            compiledMessages.append({"role": "assistant", "content": item["response"] if self.local else [{"text": item["response"]}]})
+        compiledMessages.append({"role": "user", "content": message if self.local else [{"text": message}]})
 
         return compiledMessages
 
@@ -505,7 +510,10 @@ class LLM:
 
         # print(compiledMessages)
 
-        self.response = self.ollama.chat(model = self.model, messages = compiledMessages, think = False)["message"]["content"] if message != None else "Empty input message"
+        if (self.local):
+            self.response = self.ollama.chat(model = self.model, messages = compiledMessages, think = False)["message"]["content"] if message != None else "Empty input message"
+        else:
+            self.response = self.bedrockClient.converse(modelId = self.model, messages = compiledMessages)["output"]["message"]["content"][1]["text"]
         return self.response
 
     async def get_text_response(self, message: str | None = None, memory: list[dict[str, str]] = []) -> str:
@@ -517,8 +525,14 @@ class LLM:
             print("Audio is disabled")
             return ""
         else:
+            startLLMTime = time.perf_counter()
             response = await self.get_text_response(message = message, memory = memory)
-            self.tts.invoke_speak(text = response, language = language, speakerInstance = speakerInstance)
+            print(f"llm response time: {(time.perf_counter() - startLLMTime):.1f}")
+            response = re.split(r'[.。!！？?\n]+', response)
+            for sentence in response:
+                startSpeakTime = time.perf_counter()
+                self.tts.invoke_speak(text = sentence, language = language, speakerInstance = speakerInstance)
+                print(f"speak invoke time: {(time.perf_counter() - startSpeakTime):.1f}")
             return response
 
     async def audio_chat_stream(self, message: str | None = None, language: str = "en", speakerInstance: Speaker | None = None, memory: list[dict[str, str]] = []):
@@ -554,9 +568,9 @@ class LLM:
         self.tts.stop_audio()
 
     @classmethod
-    async def create(cls, speakerInstance: Speaker | None = None, model: str = "llama3.2", systemPrompt: str | None = None, enableAudio: bool = True, manual: bool = False, externalSpeaker: bool = False, ttsMode: str = "edge"):
-        tts = await TTS.create(speakerInstance = speakerInstance, manual = manual, externalSpeaker = externalSpeaker, mode = ttsMode) if enableAudio else None
-        instance = cls(model = model, systemPrompt = systemPrompt, enableAudio = enableAudio, tts = tts, manual = manual)
+    async def create(cls, speakerInstance: Speaker | None = None, model: str = "llama3.2", systemPrompt: str | None = None, enableAudio: bool = True, manual: bool = False, externalSpeaker: bool = False, ttsMode: str = "edge", local: bool = True):
+        tts = await TTS.create(speakerInstance = speakerInstance, manual = manual, externalSpeaker = externalSpeaker, mode = ttsMode, voiceModel = "auto") if enableAudio else None
+        instance = cls(model = model, systemPrompt = systemPrompt, enableAudio = enableAudio, tts = tts, manual = manual, local = local)
         return instance
 
 class TableResponder:
@@ -604,9 +618,11 @@ class TableResponder:
 
             if ((self.silentTime > self.llmTriggerSilenceDuration) and self.spoken):
                 self._transcriber.pauseTranscribe = True
+                startChatTime = time.perf_counter()
                 message = self._transcriber.transcribeTextNoncontextual
                 if (message != ""):
-                    response = await self._LLMInstance.audio_chat_stream(message = message, language = self._transcriber.languageNoncontextual, speakerInstance = self._speaker, memory = self._memory)
+                    # use audio_chat (aws / remote, local) or audio_chat_stream (local only)
+                    response = await self._LLMInstance.audio_chat(message = message, language = self._transcriber.languageNoncontextual, speakerInstance = self._speaker, memory = self._memory)
                     self._add_memory(message = message, response = response)
                 print("finished responding")
                 self._transcriber.mic.ready = False
@@ -617,6 +633,7 @@ class TableResponder:
                 print("unlocking transcriber")
                 self._transcriber.pauseTranscribe = False
                 print("unlocked transcriber")
+                print(f"total respond time: {(time.perf_counter() - startChatTime):.1f}s")
 
             await asyncio.sleep(0.05)
 
@@ -657,6 +674,7 @@ async def instance_server_handler(websocket: ServerConnection):
     while True:
         response = await websocket.recv()
         if (response[0:6] == "REQINS"):
+            lastPort = kitanet_helper.find_port(55555, 56000, occupiedPorts)
             await websocket.send(f"ANSINS{lastIP}/{lastPort}", text = True)
             await websocket.close()
             print("handler closed")
@@ -678,7 +696,6 @@ async def instance_server_task_loop(llmInstance: LLM, serverAddress: str, server
             await asyncio.sleep(0.1)
         served = False
         print("served, initializing responder")
-        lastPort = kitanet_helper.find_port(55555, 56000, occupiedPorts)
         occupiedPorts.append(lastPort)
         table = TableResponder(manual = False, llmInstance = llmInstance, whisperModelSize = "small", whisperDevice = "cuda", whisperComputeType = "float16", micChunkDuration = 1.0, micFlatten = True, micDenoise = False, RTCIP = lastIP, RTCPort = lastPort, transcriberBeamSize = 2, transcriberDiarization = False, transcriberFilter = True, transcriberSplitParts = False, transcriberUseContextual = 0)
         print(f"assigned port {lastPort}")
@@ -698,6 +715,11 @@ async def main():
     lastIP = "127.0.0.1"
     lastPort = 55555
 
+    with open("shortTermBedrockAPIToken.txt", "r", encoding = "utf=8") as file:
+        token = file.read()
+
+    os.environ["AWS_BEARER_TOKEN_BEDROCK"] = token
+
     try:
         os.system("")
 
@@ -707,8 +729,7 @@ async def main():
         #         break
 
         Transcriber.transcriptionLock = asyncio.Lock()
-        llm = await LLM.create(model = "qwen2.5:7b", manual = False, externalSpeaker = True, ttsMode = "kokoro") #qwen2.5:3b-instruct-q8_0
-        await llm.get_text_response(message = "")
+        llm = await LLM.create(model = "openai.gpt-oss-120b-1:0", manual = False, externalSpeaker = True, ttsMode = "kokoro", local = False) #qwen2.5:3b-instruct-q8_0
 
         ip = get_ip()
         ipList: list[str] = []
