@@ -8,29 +8,30 @@
 </head>
 <body>
 
-  <!-- ヘッダー -->
+  <!-- 業務ヘッダー -->
   <header class="app-header">
     <div class="header-left">
-      <img class="store-logo" src="assets/logo.png" alt="" onerror="this.style.display='none'">
-      <span class="store-brand">接客フロア管理</span>
+      <span class="store-brand">🍽 接客フロア管理</span>
       <button id="undo-btn" class="btn btn-undo" onclick="undoLast()">
-        ↩ 取り消し：<span id="undo-desc"></span>
+        ↩️ 直前の配席を取り消す (<span id="undo-desc"></span>)
       </button>
     </div>
+
     <div class="header-right">
+      <button class="btn btn-primary" onclick="openLedger()">顧客台帳</button>
       <div class="status-summary-bar">
         <span>待合：<strong id="wait-count" class="text-accent">0組</strong></span>
         <span id="active-badge">稼働：0卓</span>
-        <span class="text-reserved" id="reserved-badge">予約：0卓</span>
-        <span id="empty-badge">空席：10卓</span>
+        <span id="reserved-badge" class="text-reserved">予約：0卓</span>
+        <span id="empty-badge">空席：0卓</span>
       </div>
-      <button class="btn btn-primary" onclick="openLedger()">顧客台帳</button>
     </div>
   </header>
 
+  <!-- 3カラムレイアウト -->
   <div class="app-layout" id="app-layout">
 
-    <!-- 左：待合受付 -->
+    <!-- 左カラム：待合受付 -->
     <section class="panel panel-waiting" id="panel-left">
       <div class="panel-header">
         <span class="panel-caption">待合受付</span>
@@ -39,45 +40,36 @@
       <div class="waiting-list" id="waiting-list"></div>
     </section>
 
+    <!-- リサイザー（左） -->
+    <div class="resizer" id="res-left"></div>
+
     <!-- 中央：座席図 -->
     <main class="panel panel-floor" id="panel-floor">
-      <div class="floor-canvas" id="floor-canvas">
-        <div class="floor-stage" id="floor-stage">
-          <!-- 厨房（店の約3割） -->
-          <div class="kitchen">
-            <div class="k-sign">厨 房</div>
-            <div class="k-unit ku1"></div><div class="k-unit ku2"></div><div class="k-unit ku3"></div>
-            <div class="k-pass">配膳口</div>
-          </div>
-          <!-- 仕切りの壁 -->
-          <div class="wall w1"></div><div class="wall w2"></div><div class="wall w3"></div>
-          <!-- 植栽 -->
-          <div class="plant" style="left:700px;top:22px"></div><div class="plant" style="left:748px;top:136px"></div>
-          <div class="plant" style="left:498px;top:424px"></div><div class="plant" style="left:16px;top:450px"></div>
-          <div class="plant" style="left:166px;top:446px"></div>
-          <!-- 帳場・看板・玄関 -->
-          <div class="cashier">帳場</div>
-          <div class="signboard">営業中</div>
-          <div class="genkan">
-            <svg viewBox="0 0 120 120" aria-hidden="true"><path d="M110 112 C 80 108, 84 80, 58 76 S 40 44, 52 30" fill="none" stroke="rgba(255,255,255,.28)" stroke-width="12" stroke-linecap="round" stroke-dasharray="2 14"/></svg>
-            <span class="door">出入口</span>
-          </div>
+      <div class="panel-header">
+        <div class="floor-tabs">
+          <button class="floor-tab active" data-floor="1F" onclick="switchFloor('1F')">1F メインフロア</button>
+          <button class="floor-tab" data-floor="2F" onclick="switchFloor('2F')">2F フロア</button>
         </div>
+      </div>
+      <div class="floor-scroll">
+        <div class="floor" id="floor-canvas"></div>
       </div>
     </main>
 
-    <!-- 右：詳細 -->
+    <!-- リサイザー（右） -->
+    <div class="resizer" id="res-right"></div>
+
+    <!-- 右カラム：詳細パネル -->
     <aside class="panel panel-detail" id="panel-right">
       <div class="detail-header">
         <div>
           <h2 id="d-title">1番テーブル</h2>
-          <div class="text-sub" id="d-sub"></div>
+          <div class="text-sub" id="d-sub">滞在：-</div>
         </div>
       </div>
+      
       <div class="detail-actions" id="d-actions"></div>
       <div class="detail-scroll" id="d-content"></div>
-      <!-- 会計フッター（利用中・会計中の卓だけ表示） -->
-      <div class="detail-footer" id="d-footer"></div>
     </aside>
 
   </div>
@@ -88,6 +80,7 @@
       <div class="modal-header">
         <div>
           <h3 id="mg-name">顧客カルテ</h3>
+          <span class="text-xs text-muted" id="mg-id">顧客識別番号: -</span>
         </div>
         <button class="btn btn-secondary" onclick="closeGuest()">✕</button>
       </div>
@@ -100,8 +93,8 @@
           <div class="section-title text-danger">アレルゲン</div>
           <div class="allergy-editor" id="mg-allergy"></div>
           <div class="custom-allergy-bar">
-            <input type="text" id="mg-custom" class="custom-allergy-input" placeholder="その他（例：キウイ）">
-            <button class="btn btn-secondary btn-add" onclick="addAllergen('mg-allergy','mg-custom')">追加</button>
+            <input type="text" id="mg-custom" class="custom-allergy-input" placeholder="＋ 独自アレルゲン（例: キウイ）">
+            <button class="btn btn-secondary" onclick="addAllergen('mg-allergy','mg-custom')">追加</button>
           </div>
         </div>
         <div>
@@ -109,29 +102,20 @@
           <div class="fav-editor-container">
             <div id="mg-favs-chips" class="fav-chips-wrap"></div>
             <div class="custom-allergy-bar" style="margin-top:6px;">
-              <input type="text" id="mg-fav-input" class="custom-allergy-input" placeholder="好物（例：鯛めし）">
-              <button class="btn btn-secondary btn-add" onclick="addFavMenu('mg')">追加</button>
+              <input type="text" id="mg-fav-input" class="custom-allergy-input" placeholder="＋ 好物（例: 鯛めし）">
+              <button class="btn btn-secondary" onclick="addFavMenu('mg')">追加</button>
             </div>
           </div>
         </div>
+        <div><div class="section-title">注文傾向</div><input type="text" id="mg-trend" class="input-base" placeholder="例: 辛め・最初に必ずビール"></div>
         <div>
-          <div class="section-title">注文傾向 <small class="sec-note">AIの解釈（修正できます）</small></div>
-          <div class="fav-editor-container">
-            <div id="mg-tends-chips" class="fav-chips-wrap"></div>
-            <div class="custom-allergy-bar">
-              <input type="text" id="mg-tend-input" class="custom-allergy-input" placeholder="傾向（例：辛口を好む）">
-              <button class="btn btn-secondary btn-add" onclick="addTend('mg')">追加</button>
-            </div>
-          </div>
-        </div>
-        <div>
-          <div class="section-title">メモ</div>
+          <div class="section-title">接客メモ</div>
           <textarea id="mg-hint" class="input-base" rows="3" placeholder="話題、趣味、好みの味付けなど"></textarea>
         </div>
         <div>
           <div class="section-title">履歴</div>
           <table class="tbl">
-            <thead><tr><th>卓番</th><th>入店日時</th><th>退店日時</th></tr></thead>
+            <thead><tr><th>セッション番号</th><th>卓番</th><th>入店</th><th>退店</th></tr></thead>
             <tbody id="mg-sessions"></tbody>
           </table>
         </div>
@@ -140,13 +124,13 @@
         <button class="btn btn-checkout" onclick="confirmMoveToTrash()">🗑️ カルテをごみ箱へ入れる</button>
         <div style="display: flex; gap: 8px;">
           <button class="btn btn-secondary" onclick="closeGuest()">閉じる</button>
-          <button class="btn btn-primary" onclick="saveGuest()">保存</button>
+          <button class="btn btn-primary" onclick="saveGuest()">💾 保存</button>
         </div>
       </div>
     </div>
   </div>
 
-  <!-- 新規受付モーダル -->
+  <!-- 新規受付クイックモーダル -->
   <div class="modal-backdrop" id="modal-add">
     <div class="modal-box modal-box-add">
       <div class="modal-header">
@@ -156,41 +140,39 @@
       <div class="modal-body">
         <div style="margin-bottom: 8px;">
           <label class="form-label">ご来店人数</label>
-          <div class="stepper">
-            <button type="button" class="step-btn" onclick="stepCount('qa-count',-1,1,10,renderQuickAddForms)" aria-label="減らす">−</button>
-            <span class="step-val" id="qa-count-view">2</span>
-            <button type="button" class="step-btn" onclick="stepCount('qa-count',1,1,10,renderQuickAddForms)" aria-label="増やす">＋</button>
-            <input id="qa-count" type="hidden" value="2">
-          </div>
+          <input id="qa-count" class="input-base" type="number" value="2" min="1" max="10" onchange="renderQuickAddForms()">
         </div>
+        <div class="section-title">ご来店者ごとの情報入力</div>
         <div id="qa-forms-container" class="qa-forms-scroll"></div>
       </div>
       <div class="modal-footer">
         <button class="btn btn-secondary" onclick="closeAdd()">キャンセル</button>
-        <button class="btn btn-primary" onclick="submitAdd()">待合に追加</button>
+        <button class="btn btn-primary" onclick="submitAdd()">受付を完了して待合に追加</button>
       </div>
     </div>
   </div>
 
-  <!-- 顧客台帳モーダル（台帳 / ごみ箱） -->
+  <!-- 顧客台帳モーダル（通常台帳 & ごみ箱切り替え） -->
   <div class="modal-backdrop" id="modal-ledger">
     <div class="modal-box modal-box-lg modal-ledger-theme">
+      <!-- 一覧ページ -->
       <div id="lp-list" class="ledger-page">
         <div class="modal-header">
           <div>
             <h3 id="ledger-title-text">顧客台帳</h3>
+            <span class="text-xs text-muted" id="ledger-sub-text">行をクリックするとカルテ編集へ進みます</span>
           </div>
           <div class="flex items-center gap-2">
             <div class="tab-switch">
               <button id="tab-active-btn" class="tab-btn active" onclick="switchLedgerTab('active')">台帳</button>
-              <button id="tab-trash-btn" class="tab-btn" onclick="switchLedgerTab('trash')">ごみ箱 (<span id="trash-count">0</span>)</button>
+              <button id="tab-trash-btn" class="tab-btn" onclick="switchLedgerTab('trash')">🗑️ ごみ箱 (<span id="trash-count">0</span>)</button>
             </div>
             <button class="btn btn-secondary" onclick="closeLedger()">✕</button>
           </div>
         </div>
         <div class="modal-body">
           <div class="search-bar">
-            <input id="lp-search" class="ledger-search" placeholder="氏名・地域・アレルゲン・好物で絞り込み" oninput="filterLedger()">
+            <input id="lp-search" class="ledger-search" placeholder="🔍 氏名・地域・アレルゲン・好物で絞り込み..." oninput="filterLedger()">
           </div>
           <div class="ledger-table-wrap">
             <table class="tbl tbl-ledger">
@@ -199,8 +181,10 @@
             </table>
           </div>
         </div>
+        <div class="modal-footer"><button class="btn btn-secondary" onclick="closeLedger()">閉じる</button></div>
       </div>
 
+      <!-- 編集ページ -->
       <div id="lp-edit" class="ledger-page" style="display:none;">
         <div class="modal-header">
           <div class="flex items-center gap-2">
@@ -215,8 +199,8 @@
             <div class="section-title text-danger">アレルゲン</div>
             <div class="allergy-editor" id="lp-allergy"></div>
             <div class="custom-allergy-bar">
-              <input type="text" id="lp-custom" class="custom-allergy-input" placeholder="その他（例：キウイ）">
-              <button class="btn btn-secondary btn-add" onclick="addAllergen('lp-allergy','lp-custom')">追加</button>
+              <input type="text" id="lp-custom" class="custom-allergy-input" placeholder="＋ 独自アレルゲン（例: キウイ）">
+              <button class="btn btn-secondary" onclick="addAllergen('lp-allergy','lp-custom')">追加</button>
             </div>
           </div>
           <div>
@@ -224,46 +208,39 @@
             <div class="fav-editor-container">
               <div id="lp-favs-chips" class="fav-chips-wrap"></div>
               <div class="custom-allergy-bar" style="margin-top:6px;">
-                <input type="text" id="lp-fav-input" class="custom-allergy-input" placeholder="好物（例：鯛めし）">
-                <button class="btn btn-secondary btn-add" onclick="addFavMenu('lp')">追加</button>
+                <input type="text" id="lp-fav-input" class="custom-allergy-input" placeholder="＋ 好物（例: 鯛めし）">
+                <button class="btn btn-secondary" onclick="addFavMenu('lp')">追加</button>
               </div>
             </div>
           </div>
-          <div>
-          <div class="section-title">注文傾向 <small class="sec-note">AIの解釈（修正できます）</small></div>
-          <div class="fav-editor-container">
-            <div id="lp-tends-chips" class="fav-chips-wrap"></div>
-            <div class="custom-allergy-bar">
-              <input type="text" id="lp-tend-input" class="custom-allergy-input" placeholder="傾向（例：辛口を好む）">
-              <button class="btn btn-secondary btn-add" onclick="addTend('lp')">追加</button>
-            </div>
-          </div>
-        </div>
-        <div><div class="section-title">メモ</div><textarea id="lp-hint" class="input-base" rows="3"></textarea></div>
+          <div><div class="section-title">注文傾向</div><input type="text" id="lp-trend" class="input-base" placeholder="例: 辛め・最初に必ずビール"></div>
+        <div><div class="section-title">接客メモ</div><textarea id="lp-hint" class="input-base" rows="3"></textarea></div>
           <div>
             <div class="section-title">履歴</div>
-            <table class="tbl"><thead><tr><th>卓番</th><th>入店日時</th><th>退店日時</th></tr></thead><tbody id="lp-sessions"></tbody></table>
+            <table class="tbl"><thead><tr><th>セッション番号</th><th>卓番</th><th>入店</th><th>退店</th></tr></thead><tbody id="lp-sessions"></tbody></table>
           </div>
         </div>
         <div class="modal-footer" style="display: flex; justify-content: space-between;">
           <button class="btn btn-checkout" onclick="confirmMoveToTrash()">🗑️ カルテをごみ箱へ入れる</button>
           <div style="display: flex; gap: 8px;">
             <button class="btn btn-secondary" onclick="backLedger()">戻る</button>
-            <button class="btn btn-primary" onclick="saveLedger()">保存して戻る</button>
+            <button class="btn btn-primary" onclick="saveLedger()">💾 保存</button>
           </div>
         </div>
       </div>
     </div>
   </div>
 
-  <!-- 確認ダイアログ -->
+  <!-- 店舗専用カスタム確認モーダル（標準ポップアップの代替） -->
   <div class="modal-backdrop" id="modal-confirm" style="z-index: 200;">
     <div class="confirm-dialog-box">
       <div class="confirm-dialog-header">
         <span id="confirm-dialog-icon">⚠️</span>
         <h4 id="confirm-dialog-title">確認</h4>
       </div>
-      <div class="confirm-dialog-body" id="confirm-dialog-message">この操作を実行してもよろしいですか？</div>
+      <div class="confirm-dialog-body" id="confirm-dialog-message">
+        この操作を実行してもよろしいですか？
+      </div>
       <div class="confirm-dialog-footer">
         <button class="btn btn-secondary" onclick="closeConfirmModal(false)">キャンセル</button>
         <button class="btn btn-checkout" id="confirm-dialog-action-btn" onclick="closeConfirmModal(true)">実行する</button>
@@ -271,32 +248,7 @@
     </div>
   </div>
 
-    <!-- 予約モーダル -->
-  <div class="modal-backdrop" id="modal-resv">
-    <div class="modal-box modal-box-sm">
-      <div class="modal-header">
-        <h3 id="rv-title">予約</h3>
-        <button class="btn btn-secondary" onclick="closeResv()">✕</button>
-      </div>
-      <div class="modal-body">
-        <div><label class="form-label">お名前</label><input id="rv-name" class="input-base" type="text" placeholder="例：高橋"></div>
-        <div><label class="form-label">時刻</label><input id="rv-time" class="input-base" type="time" value="19:00"></div>
-        <div><label class="form-label">人数</label>
-          <div class="stepper">
-            <button type="button" class="step-btn" onclick="stepCount('rv-party',-1,1,12)">−</button>
-            <span class="step-val" id="rv-party-view">2</span>
-            <button type="button" class="step-btn" onclick="stepCount('rv-party',1,1,12)">＋</button>
-            <input id="rv-party" type="hidden" value="2">
-          </div>
-        </div>
-      </div>
-      <div class="modal-footer">
-        <button class="btn btn-secondary" onclick="closeResv()">キャンセル</button>
-        <button class="btn btn-primary" onclick="saveResv()">保存</button>
-      </div>
-    </div>
-  </div>
-
+  <script src="floors.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

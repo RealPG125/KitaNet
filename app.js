@@ -1,5 +1,5 @@
 /* ═══════════════════════════════════════════
-   店舗接客フロントエンド（追加アレルゲンの削除対応版）
+   店舗接客フロントエンド
 ═══════════════════════════════════════════ */
 const API_BASE = "http://127.0.0.1:8000/api";
 
@@ -50,15 +50,15 @@ function normalizeAllergenUI(name) {
 }
 
 let DB = {};
-let MENU = [];
-let ORDERS = {};
-window.pickerOpen = false;
 let TABLES = {};
 
 // 待合リストを賑やかに（3組待ち）
 let waitingQueue = [];
 
-let selectedTable = 1;
+let selectedTable = '1';
+let currentFloor = '1F';
+const EMPTY_TABLE = { type: 'empty', userIds: [], guestCount: 0 };
+const STATE_TEXT = { empty: '空席', active: '利用中', speaking: '対話中', billing: '会計中', reserved: '予約' };
 let selectedQueueId = null;
 let dragItem = null;
 let lastUndo = null;
@@ -69,18 +69,18 @@ let currentLedgerTab = "active";
 let confirmCallback = null;
 
 async function initApp() {
-  buildSeatCards();
-  setupDrop();
+  renderFloor();
   fitFloor();
-  window.addEventListener('resize', fitFloor);
+  new ResizeObserver(fitFloor).observe(document.querySelector('.floor-scroll'));
+  setupDrop();
+  initResizers();
   try { waitingQueue = await (await fetch(`${API_BASE}/waiting-queue`)).json(); } catch (e) { console.error(e); }
-  try { MENU = await (await fetch(`${API_BASE}/menu`)).json(); } catch (e) { console.error(e); }
   await loadDatabase();
   renderWaiting();
-  showDetail(1);
+  showDetail('1');
 
   setInterval(async () => {
-    if (editingUserId || window.pickerOpen) return;
+    if (editingUserId) return;
     await loadDatabase();
     if (selectedTable) showDetail(selectedTable);
   }, 10000);
@@ -150,93 +150,91 @@ function handleRegionChange(selectEl, customInputId) {
   }
 }
 
-// 卓ごとの席数（見た目用。2＝小さな卓、4＝標準、6＝大きな卓）
-const TABLE_SEATS = { 1: 4, 2: 2, 3: 4, 4: 6, 5: 4, 6: 2, 7: 4, 8: 2, 9: 6, 10: 4 };
+/* ═══════════════════════════════════════════
+   フロア図（floors.js の座標から描画）
+═══════════════════════════════════════════ */
+function renderFloor() {
+  const f = FLOORS[currentFloor];
+  const canvas = document.getElementById('floor-canvas');
+  const c = v => `calc(var(--cell)*${v})`;
+  const pos = r => `left:${c(r.x)};top:${c(r.y)};width:${c(r.w)};height:${c(r.h)}`;
 
-function buildSeatCards() {
-  const canvas = document.getElementById('floor-stage');
-  for (let i = 1; i <= 10; i++) {
-    const div = document.createElement('div');
-    div.id = `tbl-${i}`;
-    div.className = 'seat-card';
-    div.dataset.seats = TABLE_SEATS[i] || 4;   // 見た目用の席数（椅子の数・卓の大きさ）
-    div.onclick = () => {
-      const q = waitingQueue.find(x => x.queueId === selectedQueueId);
-      if (q && TABLES[i]?.type === 'empty') assign(i, q);   // 待合カード選択中に空席をタップ → 配席
-      else showDetail(i);
-    };
-    canvas.appendChild(div);
-  }
+  const rects = f.rooms.map(r => {
+    const steps = r.steps ? Array.from({ length: r.h - 1 }, (_, i) => `<path d="M${r.x} ${r.y + i + 1}H${r.x + r.w}"/>`).join('') : '';
+    return `<rect x="${r.x}" y="${r.y}" width="${r.w}" height="${r.h}"/>${steps}`;
+  }).join('');
+  const walls = f.walls.map(d => `<path d="${d}"/>`).join('');
+  const parts = f.parts.map(d => `<path class="part" d="${d}"/>`).join('');
+  const labels = f.rooms.map(r => `<div class="room-label" style="${pos(r)}">${r.name}</div>`).join('')
+    + f.labels.map(l => `<div class="room-label" style="left:${c(l.x)};top:${c(l.y)};transform:translate(-50%,-50%)">${l.t}</div>`).join('');
+  const tables = f.tables.map(t => {
+    const big = !t.rot && !t.poly && t.w >= 2 && t.h >= 2 && t.w * t.h >= 6;
+    const clip = t.poly ? `;clip-path:polygon(${t.poly.map(([x, y]) => `${((x - t.x) / t.w * 100).toFixed(1)}% ${((y - t.y) / t.h * 100).toFixed(1)}%`).join(',')})` : '';
+    return `<div id="tbl-${t.id}" data-id="${t.id}" data-name="${t.name || t.id}" ${big ? 'data-big="1"' : ''} ${t.rot ? 'data-rot="1"' : ''} ${t.poly ? 'data-poly="1"' : ''} class="seat-card" style="${pos(t)}${clip}" onclick="tableClick('${t.id}')"></div>`;
+  }).join('');
+
+  canvas.style.setProperty('--rows', f.rows);
+  canvas.innerHTML = `<svg viewBox="0 0 ${COLS} ${f.rows}">${rects}${walls}${parts}</svg>${labels}${tables}`;
+  document.querySelectorAll('.floor-tab').forEach(b => b.classList.toggle('active', b.dataset.floor === currentFloor));
+  refreshAllCards();
+}
+
+// 画面幅に合わせてマスの大きさを自動調整
+function fitFloor() {
+  const box = document.querySelector('.floor-scroll');
+  const cell = Math.max(16, Math.min(40, Math.floor((box.clientWidth - 24) / COLS)));
+  document.documentElement.style.setProperty('--cell', `${cell}px`);
+}
+
+const guestMeta = u =>
+  (u.favs.length ? `<div class="text-xs">⭐ 好物: ${u.favs.join('、')}</div>` : '') +
+  (u.trend ? `<div class="text-xs">🍽 注文傾向: ${u.trend}</div>` : '');
+
+function switchFloor(floor) {
+  currentFloor = floor;
+  renderFloor();
+}
+
+// 待合カード選択中に空席をタップ → 配席 / それ以外 → 詳細表示
+function tableClick(id) {
+  const q = waitingQueue.find(x => x.queueId === selectedQueueId);
+  if (q && (TABLES[id]?.type ?? 'empty') === 'empty') assign(id, q);
+  else showDetail(id);
 }
 
 function refreshAllCards() {
-  for (let i = 1; i <= 10; i++) refreshCard(i);
+  FLOORS[currentFloor].tables.forEach(t => refreshCard(t.id));
 }
 
 function refreshCard(id) {
-  const t = TABLES[id];
   const el = document.getElementById(`tbl-${id}`);
-  if (!el || !t) return;
+  if (!el) return;
+  const t = TABLES[id] || EMPTY_TABLE;
+  const algs = [...new Set(t.userIds.flatMap(uid => DB[uid]?.allergies ?? []).map(normalizeAllergenUI))];
+  const state = (t.type === 'active' && algs.length) ? 'allergy' : t.type;
+  const d = el.dataset;
 
-  const allAllergies = t.userIds.flatMap(uid => DB[uid]?.allergies ?? []);
-  let cls = 'seat-card is-empty';
+  el.className = ['seat-card', `st-${state}`, d.big && 'big', d.rot && 'rot', d.poly && 'poly',
+    (selectedTable === id && selectedQueueId === null) && 'active'].filter(Boolean).join(' ');
 
-  if (t.type === 'active') {
-    cls = allAllergies.length ? 'seat-card has-allergy' : 'seat-card no-ai';
-  } else if (t.type === 'speaking') {
-    cls = 'seat-card speaking';
-  } else if (t.type === 'reserved') {
-    cls = 'seat-card is-reserved';
-  } else if (t.type === 'billing') {
-    cls = 'seat-card is-billing';
-  }
-
-  el.className = cls + (selectedTable === id && selectedQueueId === null ? ' active' : '');
-
-  let guestLabel = `<span style="font-size:.72rem;color:var(--text-dim);font-weight:700;">空席</span>`;
-  let bodyHtml = t.type === 'empty' ? `<span class="empty-label">空席</span>` : '';
-  let footHtml = '';
-
-  if (t.type === 'reserved') {
-    guestLabel = `${t.guestCount}名予約`;
-    bodyHtml = `<span class="chip chip-amber">${t.reserveHM || ''} 予約</span>`;
-    footHtml = `<span class="text-reserved">${t.reserveName || '予約席'}</span>`;
-  } else if (t.type !== 'empty') {
-    guestLabel = `${t.guestCount}名`;
-    if (t.type === 'billing') {
-      bodyHtml = `<span class="chip chip-amber">会計中</span>`;
-    } else if (t.type === 'speaking') {
-      bodyHtml = `<span class="chip chip-green">🎙️ 対話中</span>`;
-    } else {
-      const uniqueAlgs = [...new Set(allAllergies.map(normalizeAllergenUI))];
-      bodyHtml = uniqueAlgs.map(a => `<span class="chip chip-red">${a}</span>`).join('');
-    }
-    footHtml = `<span>${t.stayTime || '利用中'}</span>`;
-  }
-
-  el.innerHTML = `
-    <div class="flex justify-between items-center">
-      <span class="s-num">${id}番</span>
-      <span class="s-guests">${guestLabel}</span>
-    </div>
-    <div class="s-body">${bodyHtml}</div>
-    <div class="s-foot">${footHtml}</div>
-  `;
+  const guests = t.type === 'empty' ? '' : `${t.guestCount}名`;
+  const algHtml = algs.length ? `<div class="s-alg" title="${algs.join('、')}">⚠ ${d.big ? algs.join('・') : algs.length}</div>` : '';
+  const foot = t.type === 'reserved' ? (t.reserveTime || '') : (t.stayTime || '');
+  el.innerHTML = `<div class="in">
+    <div class="s-top"><span class="s-num">${d.name}</span><span class="s-guests">${guests}</span></div>
+    <div><div class="s-state">${STATE_TEXT[t.type] || ''}</div>${algHtml}</div>
+    <div class="s-foot">${foot}</div></div>`;
 }
 
 function renderWaiting() {
   const container = document.getElementById('waiting-list');
   document.getElementById('wait-count').innerText = `${waitingQueue.length}組`;
 
-  let active = 0, empty = 0, reserved = 0;
-  Object.values(TABLES).forEach(t => {
-    if (['active','speaking','billing'].includes(t.type)) active++;
-    if (t.type === 'empty') empty++;
-    if (t.type === 'reserved') reserved++;
-  });
-  document.getElementById('active-badge').innerText = `稼働：${active}卓`;
-  document.getElementById('reserved-badge').innerText = `予約：${reserved}卓`;
-  document.getElementById('empty-badge').innerText  = `空席：${empty}卓`;
+  const states = ALL_TABLE_IDS.map(id => TABLES[id]?.type ?? 'empty');
+  const count = fn => states.filter(fn).length;
+  document.getElementById('active-badge').innerText   = `稼働：${count(s => ['active', 'speaking', 'billing'].includes(s))}卓`;
+  document.getElementById('reserved-badge').innerText = `予約：${count(s => s === 'reserved')}卓`;
+  document.getElementById('empty-badge').innerText    = `空席：${count(s => s === 'empty')}卓`;
 
   if (!waitingQueue.length) {
     container.innerHTML = `<div style="text-align:center;padding:30px 0;color:var(--text-dim);font-size:.8rem;">待機中のお客様はいません</div>`;
@@ -249,8 +247,8 @@ function renderWaiting() {
     const alg = allAllergies.length > 0;
     const isSelected = selectedQueueId === item.queueId;
 
-    const repName = users[0]?.name || 'お客';
-    const groupTitle = repName;
+    const repName = users[0]?.name || 'お客様';
+    const groupTitle = `${repName}`;
 
     return `
       <div class="waiting-card ${alg ? 'has-allergy' : ''} ${isSelected ? 'active' : ''}"
@@ -299,7 +297,6 @@ function handleDeleteQueue(event, queueId, guestName) {
 function showWaitingDetail(queueId) {
   selectedQueueId = queueId;
   selectedTable = null;
-  hideFooter();
 
   document.querySelectorAll('.seat-card').forEach(el => el.classList.remove('active'));
   renderWaiting();
@@ -325,7 +322,7 @@ function showWaitingDetail(queueId) {
           <span class="chip chip-sub">来店 ${u.count}回目</span>
         </div>
         ${alg ? `<div>${uniqueAlgs.map(a => `<span class="chip chip-red">${a}</span>`).join(' ')}</div>` : ''}
-        ${u.favs.length ? `<div class="text-xs" style="color:#5c441b;">⭐ 好物: ${u.favs.join('、')}</div>` : ''}
+        ${guestMeta(u)}
         <div class="hint-box">
           <div class="hint-label">💡 接客メモ</div>
           <div class="hint-text">${u.hint || 'タップして情報を追加・編集できます。'}</div>
@@ -340,26 +337,24 @@ function onDragStart(e, queueId) {
 }
 
 function setupDrop() {
-  for (let i = 1; i <= 10; i++) {
-    const el = document.getElementById(`tbl-${i}`);
-    el.addEventListener('dragover', e => {
-      if (TABLES[i] && TABLES[i].type === 'empty') { e.preventDefault(); el.classList.add('drag-over'); }
-    });
-    el.addEventListener('dragleave', () => el.classList.remove('drag-over'));
-    el.addEventListener('drop', e => {
-      e.preventDefault();
-      el.classList.remove('drag-over');
-      if (dragItem && TABLES[i].type === 'empty') assign(i, dragItem);
-    });
-  }
+  const canvas = document.getElementById('floor-canvas');
+  const cardOf = e => e.target.closest('.seat-card');
+  const isEmpty = id => (TABLES[id]?.type ?? 'empty') === 'empty';
+  canvas.addEventListener('dragover', e => {
+    const el = cardOf(e);
+    if (el && isEmpty(el.dataset.id)) { e.preventDefault(); el.classList.add('drag-over'); }
+  });
+  canvas.addEventListener('dragleave', e => cardOf(e)?.classList.remove('drag-over'));
+  canvas.addEventListener('drop', e => {
+    const el = cardOf(e);
+    if (!el) return;
+    e.preventDefault();
+    el.classList.remove('drag-over');
+    if (dragItem && isEmpty(el.dataset.id)) assign(el.dataset.id, dragItem);
+  });
 }
 
-async function assign(tableId, qItem, force = false) {
-  const seats = TABLE_SEATS[tableId] || 4, n = qItem.userIds.length;
-  if (n > seats && !force) {
-    showConfirmModal("席数を超えています", `${tableId}番テーブルは${seats}名席です。${n}名を案内しますか？`, "案内する", false, () => assign(tableId, qItem, true));
-    return;
-  }
+async function assign(tableId, qItem) {
   const sessionId = `sess-${Date.now()}`;
   lastUndo = { tableId, sessionId, queueItem: { ...qItem } };
   waitingQueue = waitingQueue.filter(q => q.queueId !== qItem.queueId);
@@ -379,8 +374,8 @@ async function assign(tableId, qItem, force = false) {
   }
 
   const undoBtn = document.getElementById('undo-btn');
-  const repName = DB[qItem.userIds[0]]?.name || 'お客';
-  document.getElementById('undo-desc').innerText = `${tableId}番卓 → ${repName}`;
+  const repName = DB[qItem.userIds[0]]?.name || 'お客様';
+  document.getElementById('undo-desc').innerText = `${tableId} → ${repName}`;
   undoBtn.style.display = 'inline-flex';
 
   selectedQueueId = null;
@@ -402,17 +397,9 @@ async function undoLast() {
 async function billTable(tableId) {
   const t = TABLES[tableId];
   if (!t?.sessionId) return;
-  const doBill = async () => {
-    try { await fetch(`${API_BASE}/sessions/${t.sessionId}/bill`, { method: "POST" }); } catch (e) { console.error(e); }
-    await loadDatabase();
-    showDetail(tableId);
-  };
-  const pending = (ORDERS[t.sessionId]?.items || []).filter(i => i.status === '注文中').length;
-  if (pending > 0) {
-    showConfirmModal("未提供の注文があります", `「注文中」のまま ${pending} 品が残っています。このままお会計に進みますか？`, "お会計へ", false, doBill);
-  } else {
-    await doBill();
-  }
+  try { await fetch(`${API_BASE}/sessions/${t.sessionId}/bill`, { method: "POST" }); } catch (e) { console.error(e); }
+  await loadDatabase();
+  showDetail(tableId);
 }
 
 async function seatReserved(tableId) {
@@ -429,7 +416,7 @@ async function checkoutTable(tableId) {
 
   showConfirmModal(
     "お会計・退店処理",
-    `${tableId}番テーブルのお会計（${yen(ORDERS[t.sessionId]?.total ?? 0)}）を完了し、空席に戻しますか？`,
+    `テーブル ${tableId} のお会計を完了し、空席に戻しますか？`,
     "お会計を完了",
     false,
     async () => {
@@ -449,8 +436,6 @@ async function checkoutTable(tableId) {
 function showDetail(id) {
   selectedTable = id;
   selectedQueueId = null;
-  window.pickerOpen = false;
-  hideFooter();
 
   document.querySelectorAll('.seat-card').forEach(el => el.classList.remove('active'));
   document.getElementById(`tbl-${id}`)?.classList.add('active');
@@ -458,12 +443,11 @@ function showDetail(id) {
   const t = TABLES[id];
   const actions = document.getElementById('d-actions');
   const content = document.getElementById('d-content');
-  document.getElementById('d-title').innerText = `${id}番テーブル`;
+  document.getElementById('d-title').innerText = `テーブル ${id}`;
 
   if (!t || t.type === 'empty') {
-    actions.style.display = 'flex';
-    actions.innerHTML = `<div class="action-btn-row"><button class="btn btn-secondary" style="flex:1;" onclick="openResv(${id})">この席を予約する</button></div>`;
-    document.getElementById('d-sub').innerText = `空席（${TABLE_SEATS[id] || 4}名席）`;
+    actions.style.display = 'none';
+    document.getElementById('d-sub').innerText = '空席（即時案内可能）';
     content.innerHTML = `
       <div style="text-align:center;padding:50px 0;color:var(--text-dim);">
         <div style="font-size:2.5rem;">🪑</div>
@@ -476,34 +460,32 @@ function showDetail(id) {
   if (t.type === 'reserved') {
     actions.style.display = 'flex';
     actions.innerHTML = `
-      <div class="action-btn-row"><button class="btn btn-primary" style="flex:1;" onclick="seatReserved(${id})">着席する</button></div>
       <div class="action-btn-row">
-        <button class="btn btn-secondary" style="flex:1;" onclick="openResv(${id})">時間・内容を変更</button>
-        <button class="btn btn-checkout" style="flex:1;" onclick="deleteResv(${id})">予約を削除</button>
+        <button class="btn btn-primary" style="flex:1;" onclick="seatReserved('${id}')">✅ 着席する</button>
       </div>`;
-    document.getElementById('d-sub').innerText = `予約 ${t.reserveHM || ''}`;
-    content.innerHTML = `
-      <div class="orders-box">
-        <div class="resv-row"><span>お名前</span><strong>${t.reserveName || '-'}</strong></div>
-        <div class="resv-row"><span>時刻</span><strong>${t.reserveHM || '-'}</strong></div>
-        <div class="resv-row"><span>人数</span><strong>${t.guestCount}名（${TABLE_SEATS[id] || 4}名席）</strong></div>
-      </div>`;
+    document.getElementById('d-sub').innerText = `事前予約席`;
+    content.innerHTML = `<div class="hint-box">予約客の来店をお待ちしています。</div>`;
     return;
   }
 
-  actions.style.display = 'none';
+  actions.style.display = 'flex';
+  actions.innerHTML = `
+    <div class="action-btn-row">
+      ${t.type === 'billing' ? '' : `<button class="btn btn-bill" style="flex:1;" onclick="billTable('${id}')">お会計に進む（会計中へ）</button>`}
+      <button class="btn btn-checkout" style="flex:1;" onclick="checkoutTable('${id}')">🧾 会計・退店処理</button>
+    </div>`;
 
   document.getElementById('d-sub').innerText = `滞在：${t.stayTime || '利用中'}（${t.guestCount || t.userIds.length}名）`;
 
   const summaryHtml = t.summary ? `
     <div class="ai-box">
       <div class="ai-box-head">🎙️ 接客・対話まとめ</div>
-      <div class="ai-box-body">${formatSummary(t.summary)}</div>
+      <div class="ai-box-body">${t.summary}</div>
     </div>` : '';
 
   const guestsHtml = t.userIds.length === 0
     ? `<div style="padding:15px;background:var(--surface-sub);border:1.5px dashed var(--border-dark);border-radius:var(--radius-md);text-align:center;color:var(--text-sub);font-size:.85rem;">
-        <strong>${t.groupName || '一般のお客様'}</strong>
+        <strong>一般のお客様（カルテ未登録）</strong>
        </div>`
     : t.userIds.map((uid, index) => {
         const u = DB[uid];
@@ -517,7 +499,7 @@ function showDetail(id) {
               <span class="chip chip-sub">来店 ${u.count}回目</span>
             </div>
             ${alg ? `<div>${uniqueAlgs.map(a => `<span class="chip chip-red">${a}</span>`).join(' ')}</div>` : ''}
-            ${u.favs.length ? `<div class="text-xs" style="color:#5c441b;">⭐ 好物: ${u.favs.join('、')}</div>` : ''}
+            ${guestMeta(u)}
             <div class="hint-box">
               <div class="hint-label">💡 接客メモ</div>
               <div class="hint-text">${u.hint || 'タップして情報を編集できます。'}</div>
@@ -526,111 +508,7 @@ function showDetail(id) {
           </div>`;
       }).join('');
 
-  const ordersHtml = `
-    <div class="orders-box">
-      <div class="orders-head"><span>注文の状況</span>
-        ${t.type === 'billing' ? '' : `<button class="btn btn-secondary btn-xs" onclick="toggleMenuPicker()">＋ 追加</button>`}
-      </div>
-      <div class="menu-grid" id="menu-picker" style="display:none;">
-        ${MENU.map(m => `<button class="menu-btn" onclick="addOrder(${m.id}, ${id})">${m.name}<small>${yen(taxIn(m.price))}</small></button>`).join('')}
-      </div>
-      <div id="orders-list"></div>
-    </div>`;
-
-  content.innerHTML = ordersHtml + summaryHtml + guestsHtml;
-  if (ORDERS[t.sessionId]) renderOrders(id);
-  refreshOrders(id);
-}
-
-/* 対話まとめ：HTMLを無害化し、「。」ごとに行を分けて読みやすくする */
-function escapeHtml(str) {
-  return String(str).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-}
-function formatSummary(text) {
-  return String(text).split(/(?<=[。！？])/).map(x => x.trim()).filter(Boolean)
-    .map(x => `<p>${escapeHtml(x)}</p>`).join('');
-}
-
-/* ── 注文・会計 ── */
-const yen = n => `¥${Number(n).toLocaleString('ja-JP')}`;
-const taxIn = p => Math.round(p * 1.1);
-
-function hideFooter() {
-  const f = document.getElementById('d-footer');
-  f.style.display = 'none';
-  f.innerHTML = '';
-}
-
-async function refreshOrders(tableId) {
-  const t = TABLES[tableId];
-  if (!t?.sessionId) return;
-  try {
-    ORDERS[t.sessionId] = await (await fetch(`${API_BASE}/sessions/${t.sessionId}/orders`)).json();
-    if (selectedTable === tableId) renderOrders(tableId);
-  } catch (e) { console.error("注文取得エラー:", e); }
-}
-
-function renderOrders(tableId) {
-  const t = TABLES[tableId];
-  const data = ORDERS[t?.sessionId];
-  const box = document.getElementById('orders-list');
-  if (!data || !box) return;
-  box.innerHTML = data.items.length ? data.items.map(i => `
-    <div class="order-row">
-      <span class="order-name">${i.name}</span>
-      <span class="order-qty">×${i.qty}</span>
-      <span class="order-price">${yen(taxIn(i.unit_price * i.qty))}</span>
-      ${i.status === '提供済'
-        ? `<span class="order-st served">提供済</span>`
-        : `<button class="order-st pending" onclick="serveOrder(${i.id}, ${tableId})">注文中 → 提供</button>
-           <button class="order-x" title="取り消し" onclick="cancelOrder(${i.id}, ${tableId})">✕</button>`}
-    </div>`).join('') : `<div class="order-empty">注文はまだありません</div>`;
-  renderFooter(tableId);
-}
-
-function renderFooter(tableId) {
-  const t = TABLES[tableId];
-  const d = ORDERS[t?.sessionId];
-  const f = document.getElementById('d-footer');
-  if (!d || !t || t.type === 'empty' || t.type === 'reserved') { hideFooter(); return; }
-  const billing = t.type === 'billing';
-  f.style.display = 'flex';
-  f.innerHTML = `
-    <div class="df-total">
-      <div class="df-label">合計金額 <small>(税込)</small></div>
-      <div class="df-sum">${yen(d.total)}</div>
-      <div class="df-tax">うち消費税 ${yen(d.tax)}</div>
-    </div>
-    <button class="btn btn-primary df-btn" onclick="${billing ? `checkoutTable(${tableId})` : `billTable(${tableId})`}">${billing ? '会計完了・退店' : 'お会計へ'}</button>`;
-}
-
-function toggleMenuPicker() {
-  const el = document.getElementById('menu-picker');
-  const open = el.style.display === 'none';
-  el.style.display = open ? 'grid' : 'none';
-  window.pickerOpen = open;
-}
-
-async function addOrder(menuId, tableId) {
-  const t = TABLES[tableId];
-  if (!t?.sessionId) return;
-  try {
-    await fetch(`${API_BASE}/sessions/${t.sessionId}/orders`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ menu_id: menuId, qty: 1 })
-    });
-  } catch (e) { console.error(e); }
-  await refreshOrders(tableId);
-}
-
-async function serveOrder(orderId, tableId) {
-  try { await fetch(`${API_BASE}/orders/${orderId}/serve`, { method: "PUT" }); } catch (e) { console.error(e); }
-  await refreshOrders(tableId);
-}
-
-async function cancelOrder(orderId, tableId) {
-  try { await fetch(`${API_BASE}/orders/${orderId}`, { method: "DELETE" }); } catch (e) { console.error(e); }
-  await refreshOrders(tableId);
+  content.innerHTML = summaryHtml + guestsHtml;
 }
 
 function openGuest(userId) {
@@ -638,7 +516,8 @@ function openGuest(userId) {
   const u = DB[userId];
   if (!u) return;
 
-  document.getElementById('mg-name').innerText = `${u.name}`;
+  document.getElementById('mg-name').innerText = `カルテ：${u.name}`;
+  document.getElementById('mg-id').innerText   = `顧客識別番号: ${u.id}`;
   renderUserForm(u, 'mg');
   document.getElementById('modal-guest').style.display = 'flex';
 }
@@ -665,20 +544,19 @@ function renderUserForm(u, prefix) {
              placeholder="市区町村や海外名を入力" 
              value="${customRegionValue}">
     </div>
-    <div class="er-item"><div class="er-label">来店回数</div><div class="er-val">${u.count || 1}回</div></div>
+    <div class="er-item"><div class="er-label">累計来店回数</div><input id="${prefix}-count-val" class="input-base" type="number" value="${u.count || 1}" min="1"></div>
     <div class="er-item"><div class="er-label">最終来店</div><div style="font-size:0.8rem; font-weight:700; margin-top:4px;">${u.last || '-'}</div></div>
   `;
 
   renderAllergyEditor(u.allergies.map(normalizeAllergenUI), `${prefix}-allergy`);
   currentEditingFavs = [...(u.favs || [])];
   renderFavChips(prefix);
-  currentEditingTends = [...(u.tendencies || [])];
-  renderTendChips(prefix);
   document.getElementById(`${prefix}-hint`).value = u.hint || '';
+  document.getElementById(`${prefix}-trend`).value = u.trend || '';
 
   document.getElementById(`${prefix}-sessions`).innerHTML = u.sessions?.length
-    ? u.sessions.map(s => `<tr><td>${s.tId}番卓</td><td>${fmtDT(s.in)}</td><td>${fmtDT(s.out)}</td></tr>`).join('')
-    : '<tr><td colspan="3" style="text-align:center;color:var(--text-dim)">履歴なし</td></tr>';
+    ? u.sessions.map(s => `<tr><td>${s.sId}</td><td>${s.tId}</td><td>${s.in}</td><td>${s.out}</td></tr>`).join('')
+    : '<tr><td colspan="4" style="text-align:center;color:var(--text-dim)">履歴なし</td></tr>';
 }
 
 function renderFavChips(prefix) {
@@ -801,10 +679,11 @@ async function saveGuest() {
   const normalizedAllergies = [...new Set(rawAllergies.map(normalizeAllergenUI))];
 
   const payload = {
-    name: document.getElementById('mg-name-val').value.trim() || '無名',
+    name: document.getElementById('mg-name-val').value.trim() || '無名のお客様',
     region: finalRegion,
-    tendencies: [...currentEditingTends],
+    count: parseInt(document.getElementById('mg-count-val').value, 10) || 1,
     hint: document.getElementById('mg-hint').value.trim(),
+    trend: document.getElementById('mg-trend').value.trim(),
     allergies: normalizedAllergies,
     favs: [...currentEditingFavs]
   };
@@ -905,7 +784,6 @@ function openQuickAdd() {
   const modal = document.getElementById('modal-add');
   if (!modal) return;
   document.getElementById('qa-count').value = 2;
-  const qv = document.getElementById('qa-count-view'); if (qv) qv.innerText = 2;
   renderQuickAddForms();
   modal.style.display = 'flex';
 }
@@ -925,12 +803,12 @@ function renderQuickAddForms() {
   const prefOpts = PREFECTURES.map(p => `<option value="${p}">${p}</option>`).join('');
 
   for (let i = 1; i <= count; i++) {
-    const defaultPlaceholder = i === 1 ? '代表' : `お連れ ${i}`;
+    const defaultPlaceholder = i === 1 ? '代表のお客様' : `お連れ様 ${i}`;
 
     html += `
       <div class="qa-person-card">
         <div class="flex justify-between items-center">
-          <span style="font-weight:900; font-size:0.85rem;">👤 ${i}人目 ${i === 1 ? '(代表)' : ''}</span>
+          <span style="font-weight:900; font-size:0.85rem;">👤 ${i}人目のお客様 ${i === 1 ? '(代表)' : ''}</span>
           <input type="text" placeholder="🔍 過去カルテ検索" style="font-size:0.75rem; padding:2px 6px;" oninput="searchExistingUser(this, ${i})">
         </div>
         <input type="hidden" id="qa-user-id-${i}" value="">
@@ -951,16 +829,16 @@ function renderQuickAddForms() {
         </div>
 
         <div>
-          <label class="form-label text-danger">アレルゲン</label>
+          <label class="form-label text-danger">アレルゲン（重要度順）</label>
           <div class="allergy-editor" id="qa-allergy-${i}"></div>
           <div class="custom-allergy-bar" style="margin-top: 6px;">
-            <input type="text" id="qa-custom-allergy-${i}" class="custom-allergy-input" placeholder="その他（例：キウイ）">
-            <button type="button" class="btn btn-secondary btn-add" onclick="addCustomAllergenToQuick(${i})">追加</button>
+            <input type="text" id="qa-custom-allergy-${i}" class="custom-allergy-input" placeholder="＋ 表記ゆれ自動統一（例: エビ、ピーナッツ）">
+            <button type="button" class="btn btn-secondary" onclick="addCustomAllergenToQuick(${i})">追加</button>
           </div>
         </div>
 
         <div>
-          <label class="form-label">メモ</label>
+          <label class="form-label">接客メモ・ノート</label>
           <textarea id="qa-hint-${i}" class="input-base" rows="2" placeholder="初回来店、お祝い利用、味の好み、話題など"></textarea>
         </div>
       </div>
@@ -1038,7 +916,7 @@ async function submitAdd() {
   for (let i = 1; i <= count; i++) {
     const existingId = document.getElementById(`qa-user-id-${i}`).value || null;
     const inputEl = document.getElementById(`qa-pname-${i}`);
-    const name = inputEl.value.trim() || (i === 1 ? '代表' : `お連れ ${i}`);
+    const name = inputEl.value.trim() || (i === 1 ? '代表のお客様' : `お連れ様 ${i}`);
 
     const regionSelect = document.getElementById(`qa-pregion-${i}`).value;
     const customRegion = document.getElementById(`qa-pregion-custom-${i}`).value.trim();
@@ -1101,7 +979,7 @@ function switchLedgerTab(tab) {
   document.getElementById('tab-trash-btn').className  = tab === 'trash'  ? 'tab-btn active' : 'tab-btn';
 
   const titleText = document.getElementById('ledger-title-text');
-  const subText = document.getElementById('ledger-sub-text') || {};
+  const subText = document.getElementById('ledger-sub-text');
 
   if (tab === 'trash') {
     titleText.innerText = "🗑️ ごみ箱（削除保留中のカルテ）";
@@ -1128,38 +1006,56 @@ function renderLedger(kw = '') {
   const thead = document.getElementById('lp-thead');
   const tbody = document.getElementById('lp-tbody');
   const lower = kw.toLowerCase().trim();
+
   const isTrash = currentLedgerTab === 'trash';
   const list = Object.values(DB).filter(u => {
     if (isTrash ? !u.is_deleted : u.is_deleted) return false;
     if (!lower) return true;
     const algStr = u.allergies.map(normalizeAllergenUI).join(' ');
-    return `${u.name} ${u.region} ${algStr} ${u.favs.join(' ')} ${(u.tendencies || []).join(' ')} ${u.hint}`.toLowerCase().includes(lower);
+    return `${u.name} ${u.region} ${algStr} ${u.favs.join(' ')} ${u.trend || ''} ${u.hint}`.toLowerCase().includes(lower);
   });
-  const none = '<span class="text-muted">なし</span>';
-  const algChips = u => { const a = [...new Set(u.allergies.map(normalizeAllergenUI))]; return a.length ? a.map(x => `<span class="chip chip-red">${x}</span>`).join(' ') : none; };
-  const tags = arr => arr && arr.length ? arr.map(x => `<span class="chip chip-sub">${x}</span>`).join(' ') : none;
 
-  thead.innerHTML = isTrash
-    ? `<tr><th>氏名</th><th>地域</th><th>アレルゲン</th><th></th></tr>`
-    : `<tr><th>氏名</th><th>地域</th><th>来店</th><th>アレルゲン</th><th>好物</th><th>注文傾向</th><th>最終来店</th><th></th></tr>`;
-
-  if (!list.length) {
-    tbody.innerHTML = `<tr><td colspan="${isTrash ? 4 : 8}" class="tbl-empty">${isTrash ? 'ごみ箱は空です' : '該当する顧客は見つかりませんでした'}</td></tr>`;
-    return;
+  if (isTrash) {
+    thead.innerHTML = `<tr><th>氏名</th><th>地域</th><th>来店回数</th><th>アレルゲン</th><th>操作（復元・完全削除）</th></tr>`;
+    if (!list.length) {
+      tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;padding:24px;color:var(--text-dim);">ごみ箱は空です</td></tr>`;
+      return;
+    }
+    tbody.innerHTML = list.map(u => {
+      const uAlgs = [...new Set(u.allergies.map(normalizeAllergenUI))];
+      return `
+      <tr>
+        <td><strong>${u.name}</strong></td>
+        <td>${u.region || '未登録'}</td>
+        <td>${u.count || 1}回</td>
+        <td>${uAlgs.length ? uAlgs.map(a => `<span class="chip chip-red">${a}</span>`).join(' ') : '<span class="text-muted">なし</span>'}</td>
+        <td>
+          <button class="btn btn-secondary" style="padding:3px 8px;font-size:.72rem;margin-right:6px;" onclick="restoreUser('${u.id}')">↩️ 復元</button>
+          <button class="btn btn-checkout" style="padding:3px 8px;font-size:.72rem;" onclick="purgeUser('${u.id}')">⚠️ 本当の削除</button>
+        </td>
+      </tr>`;
+    }).join('');
+  } else {
+    thead.innerHTML = `<tr><th>氏名</th><th>地域</th><th>来店回数</th><th>好物</th><th>注文傾向</th><th>アレルゲン</th><th>最終来店</th><th>操作</th></tr>`;
+    if (!list.length) {
+      tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;padding:24px;color:var(--text-dim);">該当する顧客は見つかりませんでした</td></tr>`;
+      return;
+    }
+    tbody.innerHTML = list.map(u => {
+      const uAlgs = [...new Set(u.allergies.map(normalizeAllergenUI))];
+      return `
+      <tr class="row-click" onclick="openLedgerEdit('${u.id}')">
+        <td><strong>${u.name}</strong></td>
+        <td>${u.region || '未登録'}</td>
+        <td>${u.count || 1}回</td>
+        <td>${u.favs.length ? u.favs.map(f => `⭐${f}`).join('、') : '<span class="text-muted">なし</span>'}</td>
+        <td>${u.trend || '<span class="text-muted">なし</span>'}</td>
+        <td>${uAlgs.length ? uAlgs.map(a => `<span class="chip chip-red">${a}</span>`).join(' ') : '<span class="text-muted">なし</span>'}</td>
+        <td>${u.last || '-'}</td>
+        <td><button class="btn btn-secondary" style="padding:3px 8px;font-size:.72rem;" onclick="event.stopPropagation();openLedgerEdit('${u.id}')">編集</button></td>
+      </tr>`;
+    }).join('');
   }
-  tbody.innerHTML = list.map(u => isTrash ? `
-    <tr>
-      <td><strong>${u.name}</strong></td><td>${u.region || '未登録'}</td><td>${algChips(u)}</td>
-      <td class="td-act">
-        <button class="btn btn-secondary btn-sm" onclick="restoreUser('${u.id}')">復元</button>
-        <button class="btn btn-checkout btn-sm" onclick="purgeUser('${u.id}')">完全に削除</button>
-      </td>
-    </tr>` : `
-    <tr class="row-click" onclick="openLedgerEdit('${u.id}')">
-      <td><strong>${u.name}</strong></td><td>${u.region || '未登録'}</td><td>${u.count || 1}回</td>
-      <td>${algChips(u)}</td><td>${tags(u.favs)}</td><td>${tags(u.tendencies)}</td><td>${fmtDT(u.last)}</td>
-      <td class="td-act"><button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();openLedgerEdit('${u.id}')">編集</button></td>
-    </tr>`).join('');
 }
 
 function openLedgerEdit(userId) {
@@ -1167,7 +1063,7 @@ function openLedgerEdit(userId) {
   const u = DB[userId];
   document.getElementById('lp-list').style.display = 'none';
   document.getElementById('lp-edit').style.display = 'flex';
-  document.getElementById('lp-edit-name').innerText = `${u.name}`;
+  document.getElementById('lp-edit-name').innerText = `カルテ：${u.name}`;
   renderUserForm(u, 'lp');
 }
 
@@ -1181,10 +1077,11 @@ async function saveLedger() {
   const normalizedAllergies = [...new Set(rawAllergies.map(normalizeAllergenUI))];
 
   const payload = {
-    name: document.getElementById('lp-name-val').value.trim() || '無名',
+    name: document.getElementById('lp-name-val').value.trim() || '無名のお客様',
     region: finalRegion,
-    tendencies: [...currentEditingTends],
+    count: parseInt(document.getElementById('lp-count-val').value, 10) || 1,
     hint: document.getElementById('lp-hint').value.trim(),
+    trend: document.getElementById('lp-trend').value.trim(),
     allergies: normalizedAllergies,
     favs: [...currentEditingFavs]
   };
@@ -1204,91 +1101,38 @@ async function saveLedger() {
   if (selectedTable) showDetail(selectedTable);
 }
 
-/* 座席図は固定の設計寸法（800×600）。画面に合わせて自動で収めるだけで、手動の拡大縮小は無し */
-function fitFloor() {
-  const c = document.getElementById('floor-canvas'), st = document.getElementById('floor-stage');
-  if (!c || !st) return;
-  const k = Math.min(c.clientWidth / 800, c.clientHeight / 600);
-  st.style.transform = `scale(${k})`;
-  st.style.left = Math.max(0, (c.clientWidth - 800 * k) / 2) + 'px';
-  st.style.top  = Math.max(0, (c.clientHeight - 600 * k) / 2) + 'px';
-}
+function initResizers() {
+  const layout = document.getElementById('app-layout');
+  let active = null;
 
-window.addEventListener('DOMContentLoaded', initApp);
+  ['res-left', 'res-right'].forEach(id => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.addEventListener('mousedown', () => {
+      active = id;
+      el.classList.add('dragging');
+      document.body.style.cursor = 'col-resize';
+    });
+  });
 
-/* ── 共通：丸ボタンの人数ステッパー ── */
-function stepCount(id, d, min, max, after) {
-  const el = document.getElementById(id);
-  const v = Math.min(max, Math.max(min, (parseInt(el.value, 10) || min) + d));
-  el.value = v;
-  document.getElementById(id + '-view').innerText = v;
-  if (after) after();
-}
+  window.addEventListener('mousemove', e => {
+    if (!active) return;
+    const r = layout.getBoundingClientRect();
+    if (active === 'res-left') {
+      const w = Math.min(440, Math.max(170, e.clientX - r.left));
+      document.documentElement.style.setProperty('--panel-left', `${w}px`);
+    } else {
+      const w = Math.min(560, Math.max(240, r.right - e.clientX));
+      document.documentElement.style.setProperty('--panel-right', `${w}px`);
+    }
+  });
 
-/* ── 日時の整形（新データは YYYY-MM-DD HH:MM、旧データの文字列はそのまま） ── */
-function fmtDT(v) {
-  const m = /^\d{4}-(\d\d)-(\d\d) (\d\d:\d\d)/.exec(v || '');
-  return m ? `${+m[1]}/${+m[2]} ${m[3]}` : (v || '-');
-}
-
-/* ── 予約（名前・時刻・人数。変更・削除できる） ── */
-let resvTarget = null;   // { tableId, sessionId|null }
-
-function openResv(tableId) {
-  const t = TABLES[tableId];
-  const editing = t && t.type === 'reserved';
-  resvTarget = { tableId, sessionId: editing ? t.sessionId : null };
-  document.getElementById('rv-title').innerText = `${tableId}番テーブルの予約`;
-  document.getElementById('rv-name').value = editing ? (t.reserveName || '') : '';
-  document.getElementById('rv-time').value = editing ? (t.reserveHM || '19:00') : '19:00';
-  const p = editing ? t.guestCount : Math.min(2, TABLE_SEATS[tableId] || 2);
-  document.getElementById('rv-party').value = p;
-  document.getElementById('rv-party-view').innerText = p;
-  document.getElementById('modal-resv').style.display = 'flex';
-}
-function closeResv() { document.getElementById('modal-resv').style.display = 'none'; resvTarget = null; }
-
-async function saveResv() {
-  if (!resvTarget) return;
-  const body = {
-    table_id: resvTarget.tableId,
-    name: document.getElementById('rv-name').value.trim() || '予約',
-    party: parseInt(document.getElementById('rv-party').value, 10) || 2,
-    reserve_time: document.getElementById('rv-time').value || '19:00'
-  };
-  const url = resvTarget.sessionId ? `${API_BASE}/reservations/${resvTarget.sessionId}` : `${API_BASE}/reservations`;
-  const tableId = resvTarget.tableId;
-  try {
-    await fetch(url, { method: resvTarget.sessionId ? "PUT" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-  } catch (e) { console.error("予約APIエラー:", e); }
-  closeResv();
-  await loadDatabase();
-  showDetail(tableId);
-}
-
-function deleteResv(tableId) {
-  const t = TABLES[tableId];
-  if (!t?.sessionId) return;
-  showConfirmModal("予約の削除", `${t.reserveName || '予約'}（${t.reserveHM || ''}）の予約を削除しますか？`, "削除する", true, async () => {
-    try { await fetch(`${API_BASE}/reservations/${t.sessionId}`, { method: "DELETE" }); } catch (e) { console.error(e); }
-    await loadDatabase();
-    showDetail(tableId);
+  window.addEventListener('mouseup', () => {
+    if (!active) return;
+    document.getElementById(active).classList.remove('dragging');
+    document.body.style.cursor = '';
+    active = null;
   });
 }
 
-/* ── 注文傾向（AIの解釈を店員が修正。保存を押すまで確定しない） ── */
-let currentEditingTends = [];
-function renderTendChips(prefix) {
-  const c = document.getElementById(`${prefix}-tends-chips`);
-  if (!c) return;
-  c.innerHTML = currentEditingTends.length
-    ? currentEditingTends.map((t, i) => `<span class="fav-tag">${t}<button type="button" class="fav-del-btn" onclick="removeTend('${prefix}', ${i})">✕</button></span>`).join('')
-    : `<span class="text-muted text-xs">なし</span>`;
-}
-function addTend(prefix) {
-  const input = document.getElementById(`${prefix}-tend-input`);
-  const v = input.value.trim();
-  if (v && !currentEditingTends.includes(v)) { currentEditingTends.push(v); renderTendChips(prefix); }
-  input.value = '';
-}
-function removeTend(prefix, i) { currentEditingTends.splice(i, 1); renderTendChips(prefix); }
+window.addEventListener('DOMContentLoaded', initApp);
