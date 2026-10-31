@@ -32,19 +32,13 @@
       <button class="btn btn-dashed" onclick="openQuickAdd()">＋ 新規受付</button>
       <div class="waiting-list" id="waiting-list"></div>
     </section>
-    <div class="resizer" id="res-left"></div>
     <main class="panel panel-floor" id="panel-floor">
       <div class="floor-switch tab-switch">
         <button class="tab-btn active" data-floor="1F" onclick="switchFloor('1F')">1階</button>
         <button class="tab-btn" data-floor="2F" onclick="switchFloor('2F')">2階</button>
       </div>
-      <div class="floor-canvas" id="floor-canvas">
-        <div class="facility fac-kitchen">厨房</div>
-        <div class="facility fac-entrance">出入口</div>
-        <div class="facility fac-cashier">帳場</div>
-      </div>
+      <div class="floor-canvas" id="floor-canvas"></div>
     </main>
-    <div class="resizer" id="res-right"></div>
     <aside class="panel panel-detail" id="panel-right">
       <div class="detail-header">
         <div>
@@ -100,7 +94,7 @@
         <div class="modal-header">
           <div>
             <h3 id="ledger-title-text">顧客台帳</h3>
-            <span class="text-xs text-muted" id="ledger-sub-text">行をタップするとカルテを編集できます</span>
+            <span class="text-xs text-muted" id="ledger-sub-text"></span>
           </div>
           <div class="flex items-center gap-2">
             <div class="tab-switch">

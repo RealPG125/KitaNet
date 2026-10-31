@@ -1,7 +1,7 @@
 import sqlite3
 import time
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Optional, Union
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -48,7 +48,7 @@ class UserUpdateRequest(BaseModel):
     allergies: List[str] = []
     favs: List[str] = []
 class AssignRequest(BaseModel):
-    table_id: int
+    table_id: Union[int, str]
     user_ids: List[str]
     session_id: str
 @app.get("/api/waiting-queue")
@@ -94,7 +94,7 @@ def get_floor_status():
             WHERE end_datetime IN ('利用中', '会計中', '予約中')
         """).fetchall()
         tables_data = {}
-        for i in range(1, 11):
+        for i in [1, 2, 3, "4A", "4B", 5, "A", "B", "C", "D", 8, 9, 10, "T1", "T2", "T3", "T4", "T5", "T6", "T7"]:
             tables_data[i] = {
                 "sessionId": None, "type": "empty", "status": "empty",
                 "stayTime": None, "guestCount": 0, "userIds": [], "hasSpoken": False, "summary": ""

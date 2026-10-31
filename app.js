@@ -52,7 +52,7 @@ let deletePendingQueueId = null;
 let currentLedgerTab = "active";
 let confirmCallback = null;
 async function initApp() {
-  initResizers();
+  setupFloorGestures();
   try { waitingQueue = await (await fetch(`${API_BASE}/waiting-queue`)).json(); } catch (e) { console.error(e); }
   try { MENU = await (await fetch(`${API_BASE}/menu`)).json(); } catch (e) { console.error(e); }
   await loadDatabase();
@@ -119,10 +119,31 @@ function handleRegionChange(selectEl, customInputId) {
   }
 }
 const FLOORS = {
-  '1F': { ids: ['1','2','3','4','5','6','7'] },
+  '1F': {
+    size: [1100, 1460],
+    bounds: [30, 60, 1060, 1445],
+    rooms: [
+      ['事<br>務<br>所',58,493,110,207,'v'], ['WC',58,700,110,72,'s'], ['WC',58,772,180,63,'s'], ['階<br>段',238,670,72,165,'v'],
+      ['厨房',700,585,330,80,'l bare'], ['テラス',330,1030,300,80,'l bare'], ['鉄板<br>カウンター',912,1150,120,110,'t bare']
+    ],
+    walls: 'M310 605L347 635L450 540L635 370L347 120L58 370L238 535V565H168M238 605V930M300 150L275 128L347 57L455 152L420 182M598 462H1030V960M450 540L705 770V898H815V960H1030M58 495V960L705 1365M58 960H745M705 960V1365H780V1428H1030V960',
+    teppan: 'M950 1045L805 1195L925 1350H1030',
+    pillars: [[288,296],[435,296],[285,420],[435,420]],
+    dividers: [[240,260,78,32,45],[315,222,135,32,45],[470,262,58,7,-45],[480,455,85,32,45],[305,884,92,26,90]],
+    tables: [
+      ['3',150,372,118,78,{},45], ['4A',226,436,66,66,{},45], ['1',492,322,66,66,{},45], ['2',545,392,90,70,{},45],
+      ['4B',405,556,70,70,{},45],
+      ['A',342,752,62,76,{}], ['D',490,804,90,62,{}], ['C',652,833,100,66,{}],
+      ['5',150,892,110,70,{}], ['B',501,915,86,84,{}],
+      ['T1',902,1081,62,52,{},-46], ['T2',854,1131,62,52,{},-46], ['T3',806,1181,62,52,{},-46],
+      ['T4',876,1195,54,54,{},0],
+      ['T5',787,1265,62,52,{},52], ['T6',830,1318,62,52,{},52], ['T7',873,1371,62,52,{},52]
+    ]
+  },
   '2F': {
     size: [1100, 1085],
-    rooms: [['WC',33,33,108,66],['階段',213,259,108,254],['パントリー',767,133,146,380]],
+    bounds: [0, 0, 1100, 1085],
+    rooms: [['WC',33,33,108,66,'s'],['階段',213,259,108,254,'v'],['パントリー',767,133,146,380,'s']],
     walls: 'M33 613V33H213V613H843V1053M321 513H437L547 419L657 513H767M915 513V613H1057',
     tables: [
       ['8',112,193,110,64,{r:1,bench:1}], ['9',112,303,110,64,{r:1,bench:1}],
@@ -132,17 +153,8 @@ const FLOORS = {
     ]
   }
 };
-FLOORS['2F'].ids = FLOORS['2F'].tables.map(t => t[0]);
+Object.values(FLOORS).forEach(f => f.ids = f.tables.map(t => t[0]));
 let currentFloor = '1F';
-const SQ_PATH = (() => {
-  const pts = [];
-  for (let i = 0; i < 64; i++) {
-    const a = i / 64 * 2 * Math.PI, c = Math.cos(a), n = Math.sin(a);
-    pts.push(`${(50 + 50 * Math.sign(c) * Math.abs(c) ** 0.4).toFixed(1)} ${(50 + 50 * Math.sign(n) * Math.abs(n) ** 0.4).toFixed(1)}`);
-  }
-  return `M${pts.join('L')}Z`;
-})();
-const SQ_SVG = `<svg class="sq" viewBox="0 0 100 100" preserveAspectRatio="none"><path d="${SQ_PATH}"/></svg>`;
 const ALLERGEN_FILES = {
   "卵": "egg", "乳": "milk", "小麦": "wheat", "くるみ": "walnut", "落花生（ピーナッツ）": "peanut",
   "そば": "buckwheat", "えび": "shrimp", "かに": "crab", "カシューナッツ": "cashew", "大豆": "soybean",
@@ -184,42 +196,149 @@ function chairHtml(w, h, c) {
   if (c.bench) chairs.push(`<i class="bench" style="left:${-w / 2 - 20}px;top:${-h / 2}px;height:${h}px"></i>`);
   return chairs.join('');
 }
+// 回転したテーブル内に収まる「水平な」表示領域のサイズ（左上=卓番/右上=人数/中央=状況/左下=アレルゲン）
+function innerBox(w, h, rotDeg) {
+  const r = rotDeg * Math.PI / 180, c = Math.abs(Math.cos(r)), s = Math.abs(Math.sin(r));
+  const ratio = Math.min(1.6, Math.max(1.15, w / h));
+  const a = Math.min((w / 2 - 3) / (c + s / ratio), (h / 2 - 3) / (s + c / ratio));
+  return [2 * a, 2 * a / ratio];
+}
 function renderFloor() {
   const canvas = document.getElementById('floor-canvas');
-  canvas.querySelectorAll('.seat-card, .plan').forEach(el => el.remove());
-  canvas.classList.toggle('f2', currentFloor === '2F');
+  canvas.innerHTML = '';
   document.querySelectorAll('.floor-switch .tab-btn').forEach(b => b.classList.toggle('active', b.dataset.floor === currentFloor));
   const f = FLOORS[currentFloor];
-  if (!f.tables) {
-    f.ids.forEach(id => canvas.appendChild(makeCard(id)));
-  } else {
-    const plan = document.createElement('div');
-    plan.className = 'plan';
-    plan.style.cssText = `width:${f.size[0]}px;height:${f.size[1]}px`;
-    plan.innerHTML = `<svg class="plan-walls" viewBox="0 0 ${f.size.join(' ')}"><path d="${f.walls}"/></svg>` +
-      f.rooms.map(([n, x, y, w, h]) => `<div class="facility" style="left:${x}px;top:${y}px;width:${w}px;height:${h}px">${n}</div>`).join('');
-    f.tables.forEach(([id, cx, cy, w, h, c]) => {
-      const holder = document.createElement('div');
-      holder.className = 'tbl-holder';
-      holder.style.cssText = `left:${cx}px;top:${cy}px`;
-      holder.innerHTML = chairHtml(w, h, c);
-      holder.appendChild(makeCard(id, `--w:${w}px;--h:${h}px;left:${-w / 2}px;top:${-h / 2}px;right:auto;bottom:auto`));
-      plan.appendChild(holder);
-    });
-    canvas.appendChild(plan);
-    fitPlan();
-  }
+  const plan = document.createElement('div');
+  plan.className = 'plan';
+  plan.style.cssText = `width:${f.size[0]}px;height:${f.size[1]}px`;
+  plan.dataset.bounds = f.bounds.join(',');
+  plan.innerHTML = `<svg class="plan-walls" viewBox="0 0 ${f.size.join(' ')}"><path d="${f.walls}"/>` +
+    `${f.teppan ? `<path class="teppan" d="${f.teppan}"/>` : ''}` +
+    `${(f.pillars || []).map(([x, y]) => `<circle class="plan-pillar" cx="${x}" cy="${y}" r="17"/>`).join('')}</svg>` +
+    (f.dividers || []).map(([x, y, l, t, a]) => `<div class="divider" style="left:${x}px;top:${y}px;width:${l}px;height:${t}px;--a:${a}deg"></div>`).join('') +
+    f.rooms.map(([n, x, y, w, h, t = '']) => `<div class="facility ${t}" style="left:${x}px;top:${y}px;width:${w}px;height:${h}px">${n}</div>`).join('');
+  f.tables.forEach(([id, cx, cy, w, h, c, rot = 0]) => {
+    const holder = document.createElement('div');
+    holder.className = 'tbl-holder';
+    holder.style.cssText = `left:${cx}px;top:${cy}px;transform:rotate(${rot}deg)`;
+    holder.innerHTML = chairHtml(w, h, c);
+    const card = makeCard(id, `--w:${w}px;--h:${h}px;left:${-w / 2}px;top:${-h / 2}px;right:auto;bottom:auto`);
+    const [iw, ih] = innerBox(w, h, rot);
+    card.dataset.rot = rot; card.dataset.iw = iw.toFixed(1); card.dataset.ih = ih.toFixed(1);
+    holder.appendChild(card);
+    plan.appendChild(holder);
+  });
+  canvas.appendChild(plan);
+  canvas.appendChild(buildZoomControls());
+  fitPlan();
   refreshAllCards();
 }
-function fitPlan() {
+const ZOOM_MIN = 0.7, ZOOM_MAX = 4, ZOOM_STEP = 1.25, PAN_PAD = 24;
+let view = { z: 1, x: 0, y: 0 };
+let panDrag = null;
+function planGeom() {
   const plan = document.querySelector('.plan');
-  if (!plan) return;
+  if (!plan) return null;
   const c = document.getElementById('floor-canvas');
-  const k = Math.min(c.clientWidth / plan.offsetWidth, c.clientHeight / plan.offsetHeight);
-  plan.style.transform = `scale(${k})`;
+  const [x0, y0, x1, y1] = plan.dataset.bounds.split(',').map(Number);
+  const w = x1 - x0, h = y1 - y0;
+  const base = Math.min(c.clientWidth / w, c.clientHeight / h) * 0.98;
+  const origin = k => [(c.clientWidth - w * k) / 2 - x0 * k, (c.clientHeight - h * k) / 2 - y0 * k];
+  return { plan, c, base, origin, x0, y0, x1, y1 };
 }
+// 平面図がキャンバスの外へ行き過ぎないように移動範囲を制限
+function clampAxis(v, lo, hi, o, k, cs) {
+  const s0 = o + lo * k, s1 = o + hi * k;
+  if (s1 - s0 <= cs - 2 * PAN_PAD) return 0;
+  return Math.min(Math.max(v, cs - PAN_PAD - s1), PAN_PAD - s0);
+}
+function fitPlan() {
+  const g = planGeom();
+  if (!g) return;
+  const k = g.base * view.z;
+  const [ox, oy] = g.origin(k);
+  view.x = clampAxis(view.x, g.x0, g.x1, ox, k, g.c.clientWidth);
+  view.y = clampAxis(view.y, g.y0, g.y1, oy, k, g.c.clientHeight);
+  g.plan.style.transform = `scale(${k})`;
+  g.plan.style.left = `${ox + view.x}px`;
+  g.plan.style.top = `${oy + view.y}px`;
+  const label = document.querySelector('.zoom-pct');
+  if (label) label.textContent = `${Math.round(view.z * 100)}%`;
+}
+function zoomTo(z, px, py) {
+  const g = planGeom();
+  if (!g) return;
+  const next = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, z));
+  const kOld = g.base * view.z, kNew = g.base * next;
+  const [ox, oy] = g.origin(kOld);
+  const qx = (px - ox - view.x) / kOld, qy = (py - oy - view.y) / kOld;
+  const [nx, ny] = g.origin(kNew);
+  view = { z: next, x: px - qx * kNew - nx, y: py - qy * kNew - ny };
+  fitPlan();
+}
+function zoomBy(factor) {
+  const c = document.getElementById('floor-canvas');
+  zoomTo(view.z * factor, c.clientWidth / 2, c.clientHeight / 2);
+}
+function resetView() {
+  view = { z: 1, x: 0, y: 0 };
+  fitPlan();
+}
+function buildZoomControls() {
+  const box = document.createElement('div');
+  box.className = 'zoom-ctl';
+  box.innerHTML = `<button type="button" data-zoom="in" title="拡大" aria-label="拡大">＋</button>` +
+    `<button type="button" class="zoom-pct" data-zoom="reset" title="表示をリセット" aria-label="表示をリセット">100%</button>` +
+    `<button type="button" data-zoom="out" title="縮小" aria-label="縮小">－</button>`;
+  box.addEventListener('click', e => {
+    const mode = e.target.closest('button')?.dataset.zoom;
+    if (mode === 'in') zoomBy(ZOOM_STEP);
+    else if (mode === 'out') zoomBy(1 / ZOOM_STEP);
+    else if (mode === 'reset') resetView();
+  });
+  return box;
+}
+function setupFloorGestures() {
+  const canvas = document.getElementById('floor-canvas');
+  canvas.addEventListener('wheel', e => {
+    e.preventDefault();
+    const r = canvas.getBoundingClientRect();
+    zoomTo(view.z * (e.deltaY < 0 ? 1.12 : 1 / 1.12), e.clientX - r.left, e.clientY - r.top);
+  }, { passive: false });
+  canvas.addEventListener('pointerdown', e => {
+    if (e.target.closest('.seat-card, .zoom-ctl')) return;
+    panDrag = { x: e.clientX, y: e.clientY, vx: view.x, vy: view.y };
+    canvas.setPointerCapture(e.pointerId);
+    canvas.classList.add('panning');
+  });
+  canvas.addEventListener('pointermove', e => {
+    if (!panDrag) return;
+    view.x = panDrag.vx + e.clientX - panDrag.x;
+    view.y = panDrag.vy + e.clientY - panDrag.y;
+    fitPlan();
+  });
+  const endPan = () => {
+    panDrag = null;
+    canvas.classList.remove('panning');
+  };
+  canvas.addEventListener('pointerup', endPan);
+  canvas.addEventListener('pointercancel', endPan);
+}
+const PLAN_CSS = `
+.plan .facility.bare { background: none; border: none; box-shadow: none; white-space: nowrap; }
+.floor-canvas { min-width: 0; min-height: 0; touch-action: none; cursor: grab; }
+.floor-canvas.panning { cursor: grabbing; }
+.floor-canvas .seat-card { cursor: pointer; }
+.zoom-ctl { position: absolute; right: 14px; top: 14px; z-index: 20; display: flex; flex-direction: column; gap: 6px; cursor: default; }
+.zoom-ctl button { width: 46px; height: 46px; padding: 0; border: 2px solid var(--wood-d); border-radius: 8px; background: #fbf6e6; color: var(--sumi); font: 800 1.5rem/1 var(--f-sans); cursor: pointer; box-shadow: 0 2px 0 rgba(40, 30, 10, .3); }
+.zoom-ctl button:hover { background: #fff; }
+.zoom-ctl button:active { transform: translateY(1px); }
+.zoom-ctl .zoom-pct { height: 30px; font-size: .78rem; }
+`;
+document.head.appendChild(Object.assign(document.createElement('style'), { textContent: PLAN_CSS }));
 function switchFloor(floor) {
   currentFloor = floor;
+  view = { z: 1, x: 0, y: 0 };
   renderFloor();
   showDetail(FLOORS[floor].ids[0]);
 }
@@ -231,29 +350,30 @@ function refreshCard(id) {
   const t = TABLES[id];
   const el = document.getElementById(`tbl-${id}`);
   if (!el) return;
+  const iw = el.dataset.iw, ih = el.dataset.ih, rot = Number(el.dataset.rot || 0);
+  const wrap = inner => `<div class="s-in" style="width:${iw}px;height:${ih}px;--m:${ih}px;transform:translate(-50%,-50%) rotate(${-rot}deg)">${inner}</div>`;
   if (!t) {
     el.className = 'seat-card is-off';
-    el.innerHTML = `${SQ_SVG}<span class="s-num">${id}</span>`;
+    el.innerHTML = wrap(`<b class="c-tl">${id}</b>`);
     return;
   }
   const allAllergies = [...new Set(t.userIds.flatMap(uid => DB[uid]?.allergies ?? []).map(normalizeAllergenUI))];
-  let cls = 'seat-card is-empty', row = '';
+  let cls = 'seat-card is-empty', status = '空席', count = '';
   if (t.type === 'reserved') {
-    cls = 'seat-card is-reserved';
-    row = t.reserveTime || '予約';
+    cls = 'seat-card is-reserved'; status = t.reserveTime || '予約';
   } else if (t.type === 'billing') {
-    cls = 'seat-card is-billing';
-    row = '会計中';
+    cls = 'seat-card is-billing'; status = '会計中'; count = `${t.guestCount}名`;
   } else if (t.type === 'speaking') {
-    cls = 'seat-card speaking';
-    row = `${t.guestCount}名 🎙️`;
+    cls = 'seat-card speaking'; status = '接客中 🎙️'; count = `${t.guestCount}名`;
   } else if (t.type === 'active') {
     cls = allAllergies.length ? 'seat-card has-allergy' : 'seat-card no-ai';
-    row = `${t.guestCount}名` + allAllergies.slice(0, 2).map(a => allergenImg(a)).join('') +
-      (allAllergies.length > 2 ? `<span class="alg-more">+${allAllergies.length - 2}</span>` : '');
+    status = '利用中'; count = `${t.guestCount}名`;
   }
+  const maxShow = Number(ih) >= 56 ? 4 : 3;
+  const algs = allAllergies.slice(0, maxShow).map(a => allergenImg(a)).join('') +
+    (allAllergies.length > maxShow ? `<span class="alg-more">+${allAllergies.length - maxShow}</span>` : '');
   el.className = cls + (selectedTable === id && selectedQueueId === null ? ' active' : '');
-  el.innerHTML = `${SQ_SVG}<span class="s-num">${id}</span>${row ? `<span class="s-row">${row}</span>` : ''}`;
+  el.innerHTML = wrap(`<b class="c-tl">${id}</b><span class="c-tr">${count}</span><span class="c-mid">${status}</span><span class="c-bl">${algs}</span>`);
 }
 function renderWaiting() {
   const container = document.getElementById('waiting-list');
@@ -343,7 +463,7 @@ function showWaitingDetail(queueId) {
           <span style="font-weight:800;">👤 ${u.name} ${index === 0 && users.length > 1 ? '<span class="chip chip-blue">代表</span>' : ''}</span>
           <span class="chip chip-sub">来店 ${u.count}回目</span>
         </div>
-        ${alg ? `<div class="alg-list">${uniqueAlgs.map(a => `<span class="alg-item">${allergenImg(a, 'alg-ico-lg')}${a}</span>`).join('')}</div>` : ''}
+        ${alg ? `<div class="alg-list">${uniqueAlgs.map(a => `<span class="alg-item">${allergenImg(a, 'alg-ico-lg')}</span>`).join('')}</div>` : ''}
         ${u.favs.length ? `<div class="text-xs" style="color:#5c441b;">⭐ 好物: ${u.favs.join('、')}</div>` : ''}
         <div class="hint-box">
           <div class="hint-label">メモ</div>
@@ -488,7 +608,7 @@ function showDetail(id) {
               <span style="font-weight:800;">👤 ${u.name} ${index === 0 && t.userIds.length > 1 ? '<span class="chip chip-blue">代表</span>' : ''}</span>
               <span class="chip chip-sub">来店 ${u.count}回目</span>
             </div>
-            ${alg ? `<div class="alg-list">${uniqueAlgs.map(a => `<span class="alg-item">${allergenImg(a, 'alg-ico-lg')}${a}</span>`).join('')}</div>` : ''}
+            ${alg ? `<div class="alg-list">${uniqueAlgs.map(a => `<span class="alg-item">${allergenImg(a, 'alg-ico-lg')}</span>`).join('')}</div>` : ''}
             ${u.favs.length ? `<div class="text-xs" style="color:#5c441b;">⭐ 好物: ${u.favs.join('、')}</div>` : ''}
             <div class="hint-box">
               <div class="hint-label">メモ</div>
@@ -1007,7 +1127,7 @@ function switchLedgerTab(tab) {
     subText.innerText = "復元、またはデータベースからの完全削除が行えます";
   } else {
     titleText.innerText = "顧客台帳";
-    subText.innerText = "行をクリックするとカルテ編集へ進みます";
+    subText.innerText = "";
   }
   backLedger();
 }
@@ -1078,50 +1198,5 @@ function openLedgerEdit(userId) {
   document.getElementById('lp-edit').style.display = 'flex';
   document.getElementById('lp-edit-name').innerText = u.name;
   renderUserForm(u, 'lp');
-}
-function initResizers() {
-  const layout = document.getElementById('app-layout');
-  let active = null;
-  ['res-left', 'res-right'].forEach(id => {
-    const el = document.getElementById(id);
-    if (!el) return;
-    el.addEventListener('mousedown', () => {
-      active = id;
-      el.classList.add('dragging');
-      document.body.style.cursor = 'col-resize';
-    });
-  });
-  window.addEventListener('mousemove', e => {
-    if (!active) return;
-    const r = layout.getBoundingClientRect();
-    if (active === 'res-left') {
-      const w = Math.min(440, Math.max(170, e.clientX - r.left));
-      document.documentElement.style.setProperty('--panel-left', `${w}px`);
-    } else {
-      const w = Math.min(560, Math.max(240, r.right - e.clientX));
-      document.documentElement.style.setProperty('--panel-right', `${w}px`);
-    }
-  });
-  window.addEventListener('mouseup', () => {
-    if (!active) return;
-    document.getElementById(active).classList.remove('dragging');
-    document.body.style.cursor = '';
-    active = null;
-  });
-}
-function setW(side, w) {
-  document.documentElement.style.setProperty(side === 'left' ? '--panel-left' : '--panel-right', `${w}px`);
-}
-function setFloorScale(scale) {
-  if (scale === 'small') {
-    setW('left', 340);
-    setW('right', 460);
-  } else if (scale === 'medium') {
-    setW('left', 260);
-    setW('right', 380);
-  } else if (scale === 'large') {
-    setW('left', 180);
-    setW('right', 260);
-  }
 }
 window.addEventListener('DOMContentLoaded', initApp);

@@ -318,7 +318,7 @@ def create_database():
     # 4番卓：会計中 🧾（中村様・フェリー待ち）
     cursor.execute("""
     INSERT INTO TableSession (id, datetime, table_id, start_datetime, end_datetime, conversation_status)
-    VALUES ('sess-004', '2026-10-16 18:50', 4, '18:50 入店 (滞在60分)', '会計中', 0);
+    VALUES ('sess-004', '2026-10-16 18:50', '4A', '18:50 入店 (滞在60分)', '会計中', 0);
     """)
     cursor.execute("INSERT INTO TableSessionMembers VALUES ('sess-004', 'u-0009');")
     cursor.execute("""
@@ -341,7 +341,7 @@ def create_database():
     # 6番卓：利用中 ＆ AI対話中 🎙️（インバウンド英語対応 2名）
     cursor.execute("""
     INSERT INTO TableSession (id, datetime, table_id, start_datetime, end_datetime, conversation_status)
-    VALUES ('sess-006', '2026-10-16 19:40', 6, '19:40 入店 (滞在10分)', '利用中', 1);
+    VALUES ('sess-006', '2026-10-16 19:40', 'A', '19:40 入店 (滞在10分)', '利用中', 1);
     """)
     cursor.execute("INSERT INTO TableSessionMembers VALUES ('sess-006', 'u-0006');")
     cursor.execute("INSERT INTO TableSessionMembers VALUES ('sess-006', 'u-0007');")
