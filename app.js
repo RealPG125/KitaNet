@@ -126,17 +126,17 @@ const FLOORS = {
     bounds: [30, 40, 1060, 1445],
     rooms: [
       ['事<br>務<br>所',58,493,110,207,'v'], ['WC',58,700,110,72,'s'], ['WC',58,772,180,63,'s'], ['階<br>段',238,670,72,165,'v'],
-      ['厨房',652,634,330,80,'l bare'], ['テラス',339,1055,300,80,'l bare'], ['鉄板<br>カウンター',891,1152,134,80,'t bare']
+      ['厨房',652,634,330,80,'l bare'], ['テラス',339,1055,300,80,'l bare'], ['鉄板<br>カウンター',883,1172,134,80,'t bare']
     ],
-    walls: 'M312 623L347 658L617 388L347 118L77 388L239 550M310.6 154.4L279.1 122.8L347 55L448.8 156.8L417.3 188.3M570 435L597 462H1030V960M470 535L705 770V898H815V960H1030M238 835V930M58 495V960L705 1365M58 960H745M705 960V1365H780V1428H1030V960',
+    walls: 'M312 623L347 658L617 388L347 118L77 388L239 550V567H168M239 608V670M310.6 154.4L279.1 122.8L347 55L448.8 156.8L417.3 188.3M570 435L597 462H1030V960M470 535L705 770V898H815V960H1030M238 835V930M58 495V960L705 1365M58 960H745M705 960V1365H780V1428H1030V960',
     teppan: 'M940.9 1055.6L803 1210L928.9 1373H1030',
     pillars: [[292,302],[426,302],[292,436],[426,436]],
-    dividers: [[316.9,230.1,108,24,45],[250.3,264.2,62,24,45],[466.8,273.9,51,6,-45],[474.4,478.2,66,24,45],[305,885,88,24,90]],
+    dividers: [[316.9,230.1,108,45],[250.3,264.2,62,45],[466.8,273.9,51,-45],[474.4,478.2,66,45],[305,885,88,90]],
     tables: [
       ['3',164,377.4,96,62,{},45], ['4A',231.8,449.5,58,56,{},45], ['1',483.4,332.2,58,60,{},45], ['2',542,395.1,84,62,{},45],
       ['4B',395,560.5,58,62,{},45], ['A',343,749,58,66,{}], ['D',490,803,80,58,{}], ['C',652,834,100,58,{}],
       ['5',158,897,96,58,{}], ['B',502,912,66,88,{}], ['T1',921.5,1077.2,58,58,{},-48.2], ['T2',881.6,1122,58,58,{},-48.2],
-      ['T3',841.6,1166.7,58,58,{},-48.2], ['T4',995,1307,62,62,{}], ['T5',837.8,1255.1,58,58,{},52.3], ['T6',874.5,1302.6,58,58,{},52.3],
+      ['T3',841.6,1166.7,58,58,{},-48.2], ['T4',994,1373,58,58,{}], ['T5',837.8,1255.1,58,58,{},52.3], ['T6',874.5,1302.6,58,58,{},52.3],
       ['T7',911.2,1350.1,58,58,{},52.3]
     ]
   },
@@ -145,9 +145,9 @@ const FLOORS = {
     size: [1100, 1085],
     bounds: [100, -30, 990, 1020],
     rooms: [['更衣室',132,56,152,80,'s'],['WC',132,136,92,56,'s'],['階<br>段',284,326,92,218,'v'],['パントリー',740,218,120,326,'p']],
-    walls: 'M132 56V626H800V994H954V626H860V544M284 56V326M284 544V626M376 544H466L558 462L648 544H800M800 544V626',
+    walls: 'M132 56V626H800V994H954V626H860V544M284 56V326M376 544H466L558 462L648 544H800',
     tables: [
-      ['8',174,268,64,48,{}], ['9',174,368,64,48,{}], ['10',174,464,64,48,{}], ['11',174,570,64,48,{}],
+      ['8',164,268,64,48,{}], ['9',164,368,64,48,{}], ['10',164,464,64,48,{}], ['11',164,570,64,48,{}],
       ['12',558,518,64,48,{}],
       ['13',882,700,128,48,{}],
       ['14A',830,790,48,64,{}], ['14B',926,850,48,64,{}],
@@ -237,12 +237,12 @@ function renderFloor() {
   plan.innerHTML = `<div class="plan-grid"></div><svg class="plan-walls" viewBox="0 0 ${f.size.join(' ')}"><path d="${f.walls}"/>` +
     `${f.teppan ? `<path class="teppan" d="${f.teppan}"/>` : ''}` +
     `${(f.pillars || []).map(([x, y]) => `<circle class="plan-pillar" cx="${x}" cy="${y}" r="20"/>`).join('')}</svg>` +
-    (f.dividers || []).map(([x, y, l, t, a]) => `<div class="divider" style="left:${x}px;top:${y}px;width:${l}px;height:${t}px;--a:${a}deg"></div>`).join('') +
+    (f.dividers || []).map(([x, y, l, a]) => `<div class="divider" style="left:${x}px;top:${y}px;width:${l}px;height:${DIVIDER_W}px;--a:${a}deg"></div>`).join('') +
     f.rooms.map(([n, x, y, w, h, t = '']) => `<div class="facility ${t}" style="left:${x}px;top:${y}px;width:${w}px;height:${h}px">${n}</div>`).join('');
   f.tables.forEach(([id, cx, cy, w, h, c, rot = 0]) => {
     const holder = document.createElement('div');
     holder.className = 'tbl-holder';
-    holder.style.cssText = `left:${cx}px;top:${cy}px;transform:rotate(${rot}deg)`;
+    holder.style.cssText = `left:${cx}px;top:${cy}px;transform:rotate(${rot}deg);--w:${w}px;--h:${h}px`;
     holder.innerHTML = chairHtml(w, h, c);
     const card = makeCard(id, `--w:${w}px;--h:${h}px;left:${-w / 2}px;top:${-h / 2}px;right:auto;bottom:auto`);
     const [iw, ih] = innerBox(w, h);
@@ -257,6 +257,7 @@ function renderFloor() {
   refreshAllCards();
 }
 const GRID_BLEED = 2400;
+const DIVIDER_W = 24; // 仕切りの太さ（全て共通）
 const ZOOM_MIN = 0.7, ZOOM_MAX = 4, ZOOM_STEP = 1.25, PAN_PAD = 24;
 let view = { z: 1, x: 0, y: 0 };
 let panDrag = null;
@@ -619,7 +620,7 @@ function showDetail(id) {
   document.getElementById('d-sub').innerText = `滞在：${t.stayTime || '利用中'}（${t.guestCount || t.userIds.length}名）`;
   const summaryHtml = t.summary ? `
     <div class="ai-box">
-      <div class="ai-box-head">🎙️ 接客・対話まとめ</div>
+      <div class="ai-box-head">🎙️ 対話まとめ</div>
       <div class="ai-box-body">${t.summary}</div>
     </div>` : '';
   const guestsHtml = t.userIds.length === 0
@@ -763,7 +764,7 @@ function editorBody(p, ph = '') {
   return `
     <div><div class="section-title">顧客基本情報</div><div class="er-grid" id="${p}-stats"></div></div>
     <div>
-      <div class="section-title text-danger">アレルゲン登録・変更</div>
+      <div class="section-title text-danger">アレルゲン</div>
       <div class="allergy-editor" id="${p}-allergy"></div>
       <div class="custom-allergy-bar">
         <input type="text" id="${p}-custom" class="custom-allergy-input" placeholder="＋ 独自アレルゲン（例: キウイ）">
