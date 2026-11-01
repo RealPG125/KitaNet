@@ -120,36 +120,38 @@ function handleRegionChange(selectEl, customInputId) {
 }
 const FLOORS = {
   '1F': {
+    fit: true,
+    grid: [36, 32.2, 58, 835],
     size: [1100, 1460],
-    bounds: [30, 60, 1060, 1445],
+    bounds: [30, 40, 1060, 1445],
     rooms: [
       ['事<br>務<br>所',58,493,110,207,'v'], ['WC',58,700,110,72,'s'], ['WC',58,772,180,63,'s'], ['階<br>段',238,670,72,165,'v'],
-      ['厨房',700,585,330,80,'l bare'], ['テラス',330,1030,300,80,'l bare'], ['鉄板<br>カウンター',912,1150,120,110,'t bare']
+      ['厨房',652,634,330,80,'l bare'], ['テラス',339,1055,300,80,'l bare'], ['鉄板<br>カウンター',891,1152,134,80,'t bare']
     ],
-    walls: 'M310 605L347 635L450 540L635 370L347 120L58 370L238 535V565H168M238 605V930M300 150L275 128L347 57L455 152L420 182M598 462H1030V960M450 540L705 770V898H815V960H1030M58 495V960L705 1365M58 960H745M705 960V1365H780V1428H1030V960',
-    teppan: 'M950 1045L805 1195L925 1350H1030',
-    pillars: [[288,296],[435,296],[285,420],[435,420]],
-    dividers: [[240,260,78,32,45],[315,222,135,32,45],[470,262,58,7,-45],[480,455,85,32,45],[305,884,92,26,90]],
+    walls: 'M312 623L347 658L617 388L347 118L77 388L239 550M310.6 154.4L279.1 122.8L347 55L448.8 156.8L417.3 188.3M570 435L597 462H1030V960M470 535L705 770V898H815V960H1030M238 835V930M58 495V960L705 1365M58 960H745M705 960V1365H780V1428H1030V960',
+    teppan: 'M940.9 1055.6L803 1210L928.9 1373H1030',
+    pillars: [[292,302],[426,302],[292,436],[426,436]],
+    dividers: [[316.9,230.1,108,24,45],[250.3,264.2,62,24,45],[466.8,273.9,51,6,-45],[474.4,478.2,66,24,45],[305,885,88,24,90]],
     tables: [
-      ['3',150,372,118,78,{},45], ['4A',226,436,66,66,{},45], ['1',492,322,66,66,{},45], ['2',545,392,90,70,{},45],
-      ['4B',405,556,70,70,{},45],
-      ['A',342,752,62,76,{}], ['D',490,804,90,62,{}], ['C',652,833,100,66,{}],
-      ['5',150,892,110,70,{}], ['B',501,915,86,84,{}],
-      ['T1',902,1081,62,52,{},-46], ['T2',854,1131,62,52,{},-46], ['T3',806,1181,62,52,{},-46],
-      ['T4',876,1195,54,54,{},0],
-      ['T5',787,1265,62,52,{},52], ['T6',830,1318,62,52,{},52], ['T7',873,1371,62,52,{},52]
+      ['3',164,377.4,96,62,{},45], ['4A',231.8,449.5,58,56,{},45], ['1',483.4,332.2,58,60,{},45], ['2',542,395.1,84,62,{},45],
+      ['4B',395,560.5,58,62,{},45], ['A',343,749,58,66,{}], ['D',490,803,80,58,{}], ['C',652,834,100,58,{}],
+      ['5',158,897,96,58,{}], ['B',502,912,66,88,{}], ['T1',921.5,1077.2,58,58,{},-48.2], ['T2',881.6,1122,58,58,{},-48.2],
+      ['T3',841.6,1166.7,58,58,{},-48.2], ['T4',995,1307,62,62,{}], ['T5',837.8,1255.1,58,58,{},52.3], ['T6',874.5,1302.6,58,58,{},52.3],
+      ['T7',911.2,1350.1,58,58,{},52.3]
     ]
   },
   '2F': {
+    grid: [30.4, 28.45, 132, 56],
     size: [1100, 1085],
-    bounds: [0, 0, 1100, 1085],
-    rooms: [['WC',33,33,108,66,'s'],['階段',213,259,108,254,'v'],['パントリー',767,133,146,380,'s']],
-    walls: 'M33 613V33H213V613H843V1053M321 513H437L547 419L657 513H767M915 513V613H1057',
+    bounds: [100, -30, 990, 1020],
+    rooms: [['更衣室',132,56,152,80,'s'],['WC',132,136,92,56,'s'],['階<br>段',284,326,92,218,'v'],['パントリー',740,218,120,326,'p']],
+    walls: 'M132 56V626H800V994H954V626H860V544M284 56V326M284 544V626M376 544H466L558 462L648 544H800M800 544V626',
     tables: [
-      ['8',112,193,110,64,{r:1,bench:1}], ['9',112,303,110,64,{r:1,bench:1}],
-      ['10',112,417,110,64,{r:1,bench:1}], ['11',112,545,110,64,{r:1,bench:1}],
-      ['12',547,485,80,52,{l:1,r:1}], ['13',977,739,110,70,{t:2,b:2}],
-      ['14A',887,819,80,60,{t:1,b:1}], ['14B',1037,923,80,60,{t:1,b:1}], ['15',909,957,110,70,{t:2,b:2}]
+      ['8',174,268,64,48,{}], ['9',174,368,64,48,{}], ['10',174,464,64,48,{}], ['11',174,570,64,48,{}],
+      ['12',558,518,64,48,{}],
+      ['13',882,700,128,48,{}],
+      ['14A',830,790,48,64,{}], ['14B',926,850,48,64,{}],
+      ['15',882,935,128,48,{}]
     ]
   }
 };
@@ -163,8 +165,24 @@ const ALLERGEN_FILES = {
   "さば": "mackerel", "いくら": "ikura", "いか": "squid", "あわび": "abalone", "ごま": "sesame",
   "牛肉": "beef", "豚肉": "pork", "鶏肉": "chicken", "やまいも": "yam", "ゼラチン": "gelatin"
 };
+const ALLERGEN_LABEL_LINES = {
+  "落花生（ピーナッツ）": ["落花生", "（ピーナッツ）"], "カシューナッツ": ["カシュー", "ナッツ"],
+  "キウイフルーツ": ["キウイ", "フルーツ"], "マカダミアナッツ": ["マカダミア", "ナッツ"]
+};
+const allergenLabel = name => (ALLERGEN_LABEL_LINES[name] || [name]).map(l => `<i>${l}</i>`).join('');
 const allergenImg = (name, cls = 'alg-ico') =>
   `<img class="${cls}" src="img/allergens/${ALLERGEN_FILES[name] || 'other'}.png" alt="${name}" title="${name}" onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'chip chip-red',textContent:this.alt}))">`;
+const ALLERGEN_FALLBACK = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Ccircle cx='12' cy='12' r='11' fill='%23fff' stroke='%238f2a20' stroke-width='2'/%3E%3Cpath d='M12 6v8M12 17v2' stroke='%238f2a20' stroke-width='2.5' stroke-linecap='round'/%3E%3C/svg%3E";
+const tableAllergenImg = name =>
+  `<img class="alg-ico" src="img/allergens/${ALLERGEN_FILES[name] || 'other'}.png" alt="" title="${name}" onerror="this.onerror=null;this.src=ALLERGEN_FALLBACK">`;
+const allergenChip = name =>
+  `<span class="alg-chip"><img src="img/allergens/${ALLERGEN_FILES[name] || 'other'}.png" alt="" onerror="this.remove()"><em>${name}</em></span>`;
+const personAllergens = u => [...new Set(u.allergies.map(normalizeAllergenUI))];
+const textUnits = s => [...s].reduce((n, ch) => n + (ch.charCodeAt(0) < 256 ? .55 : 1), 0);
+const fitVars = (m, iw, status) => {
+  const fs = Math.min(m * .19, (iw - 6) / textUnits(status));
+  return `--fn:${(m * .3).toFixed(1)}px;--fc:${(m * .21).toFixed(1)}px;--fs:${fs.toFixed(1)}px;--fp:${(m * .25).toFixed(1)}px;`;
+};
 const tableNo = id => /^\d+$/.test(id) ? Number(id) : id;
 function makeCard(id, style = '') {
   const div = document.createElement('div');
@@ -197,24 +215,28 @@ function chairHtml(w, h, c) {
   return chairs.join('');
 }
 // 回転したテーブル内に収まる「水平な」表示領域のサイズ（左上=卓番/右上=人数/中央=状況/左下=アレルゲン）
-function innerBox(w, h, rotDeg) {
-  const r = rotDeg * Math.PI / 180, c = Math.abs(Math.cos(r)), s = Math.abs(Math.sin(r));
-  const ratio = Math.min(1.6, Math.max(1.15, w / h));
-  const a = Math.min((w / 2 - 3) / (c + s / ratio), (h / 2 - 3) / (s + c / ratio));
-  return [2 * a, 2 * a / ratio];
+function innerBox(w, h) {
+  return [w - 6, h - 6];
 }
 function renderFloor() {
   const canvas = document.getElementById('floor-canvas');
   canvas.innerHTML = '';
+  canvas.dataset.floor = currentFloor;
   document.querySelectorAll('.floor-switch .tab-btn').forEach(b => b.classList.toggle('active', b.dataset.floor === currentFloor));
   const f = FLOORS[currentFloor];
   const plan = document.createElement('div');
   plan.className = 'plan';
+  plan.dataset.floor = currentFloor;
   plan.style.cssText = `width:${f.size[0]}px;height:${f.size[1]}px`;
   plan.dataset.bounds = f.bounds.join(',');
-  plan.innerHTML = `<svg class="plan-walls" viewBox="0 0 ${f.size.join(' ')}"><path d="${f.walls}"/>` +
+  const [gw, gh, gx, gy] = f.grid;
+  plan.style.setProperty('--gw', `${gw}px`);
+  plan.style.setProperty('--gh', `${gh}px`);
+  plan.style.setProperty('--gx', `${((gx + GRID_BLEED) % gw + gw) % gw}px`);
+  plan.style.setProperty('--gy', `${((gy + GRID_BLEED) % gh + gh) % gh}px`);
+  plan.innerHTML = `<div class="plan-grid"></div><svg class="plan-walls" viewBox="0 0 ${f.size.join(' ')}"><path d="${f.walls}"/>` +
     `${f.teppan ? `<path class="teppan" d="${f.teppan}"/>` : ''}` +
-    `${(f.pillars || []).map(([x, y]) => `<circle class="plan-pillar" cx="${x}" cy="${y}" r="17"/>`).join('')}</svg>` +
+    `${(f.pillars || []).map(([x, y]) => `<circle class="plan-pillar" cx="${x}" cy="${y}" r="20"/>`).join('')}</svg>` +
     (f.dividers || []).map(([x, y, l, t, a]) => `<div class="divider" style="left:${x}px;top:${y}px;width:${l}px;height:${t}px;--a:${a}deg"></div>`).join('') +
     f.rooms.map(([n, x, y, w, h, t = '']) => `<div class="facility ${t}" style="left:${x}px;top:${y}px;width:${w}px;height:${h}px">${n}</div>`).join('');
   f.tables.forEach(([id, cx, cy, w, h, c, rot = 0]) => {
@@ -223,8 +245,9 @@ function renderFloor() {
     holder.style.cssText = `left:${cx}px;top:${cy}px;transform:rotate(${rot}deg)`;
     holder.innerHTML = chairHtml(w, h, c);
     const card = makeCard(id, `--w:${w}px;--h:${h}px;left:${-w / 2}px;top:${-h / 2}px;right:auto;bottom:auto`);
-    const [iw, ih] = innerBox(w, h, rot);
+    const [iw, ih] = innerBox(w, h);
     card.dataset.rot = rot; card.dataset.iw = iw.toFixed(1); card.dataset.ih = ih.toFixed(1);
+    card.dataset.m = (f.fit ? Math.min(iw, ih) : ih).toFixed(1);
     holder.appendChild(card);
     plan.appendChild(holder);
   });
@@ -233,6 +256,7 @@ function renderFloor() {
   fitPlan();
   refreshAllCards();
 }
+const GRID_BLEED = 2400;
 const ZOOM_MIN = 0.7, ZOOM_MAX = 4, ZOOM_STEP = 1.25, PAN_PAD = 24;
 let view = { z: 1, x: 0, y: 0 };
 let panDrag = null;
@@ -351,10 +375,11 @@ function refreshCard(id) {
   const el = document.getElementById(`tbl-${id}`);
   if (!el) return;
   const iw = el.dataset.iw, ih = el.dataset.ih, rot = Number(el.dataset.rot || 0);
-  const wrap = inner => `<div class="s-in" style="width:${iw}px;height:${ih}px;--m:${ih}px;transform:translate(-50%,-50%) rotate(${-rot}deg)">${inner}</div>`;
+  const fit = FLOORS[currentFloor].fit, m = Number(el.dataset.m);
+  const wrap = (inner, vars = '') => `<div class="s-in" style="width:${iw}px;height:${ih}px;--m:${ih}px;${vars}transform:translate(-50%,-50%)">${inner}</div>`;
   if (!t) {
     el.className = 'seat-card is-off';
-    el.innerHTML = wrap(`<b class="c-tl">${id}</b>`);
+    el.innerHTML = wrap(`<b class="c-tl">${id}</b>`, fit ? fitVars(m, Number(iw), '') : '');
     return;
   }
   const allAllergies = [...new Set(t.userIds.flatMap(uid => DB[uid]?.allergies ?? []).map(normalizeAllergenUI))];
@@ -369,11 +394,15 @@ function refreshCard(id) {
     cls = allAllergies.length ? 'seat-card has-allergy' : 'seat-card no-ai';
     status = '利用中'; count = `${t.guestCount}名`;
   }
-  const maxShow = Number(ih) >= 56 ? 4 : 3;
-  const algs = allAllergies.slice(0, maxShow).map(a => allergenImg(a)).join('') +
+  let maxShow = Math.min(6, Math.max(2, Math.floor(Number(iw) / (Number(ih) * .3))));
+  if (fit) {
+    const cap = Math.max(1, Math.floor((Number(iw) - 4) / (m * .25 + 2)));
+    maxShow = allAllergies.length > cap ? Math.max(1, cap - 1) : allAllergies.length;
+  }
+  const algs = allAllergies.slice(0, maxShow).map(a => fit ? tableAllergenImg(a) : allergenImg(a)).join('') +
     (allAllergies.length > maxShow ? `<span class="alg-more">+${allAllergies.length - maxShow}</span>` : '');
   el.className = cls + (selectedTable === id && selectedQueueId === null ? ' active' : '');
-  el.innerHTML = wrap(`<b class="c-tl">${id}</b><span class="c-tr">${count}</span><span class="c-mid">${status}</span><span class="c-bl">${algs}</span>`);
+  el.innerHTML = wrap(`<b class="c-tl">${id}</b><span class="c-tr">${count}</span><span class="c-mid">${status}</span><span class="c-bl">${algs}</span>`, fit ? fitVars(m, Number(iw), status) : '');
 }
 function renderWaiting() {
   const container = document.getElementById('waiting-list');
@@ -414,10 +443,10 @@ function renderWaiting() {
             </button>
           </div>
         </div>
-        <div class="flex gap-2 text-xs text-sub" style="margin-top:4px; flex-wrap:wrap;">
-          ${users.map(u => `<span>👤 ${u.name}</span>`).join(' ')}
-        </div>
-        ${alg ? `<div style="margin-top:4px;">${allAllergies.map(a => `<span class="chip chip-red">${a}</span>`).join(' ')}</div>` : ''}
+        ${users.map((u, i) => {
+          const algs = personAllergens(u);
+          return `${i > 0 ? `<div class="wc-member">${u.name}</div>` : ''}${algs.length ? `<div class="wc-allergens">${algs.map(allergenChip).join('')}</div>` : ''}`;
+        }).join('')}
       </div>`;
   }).join('');
 }
@@ -825,7 +854,7 @@ function renderAllergyEditor(selected, containerId) {
       <label class="allergy-label alg-tile">
         <input type="checkbox" value="${item}" ${normSelected.includes(item) ? 'checked' : ''}>
         ${allergenImg(item, 'alg-ico-lg')}
-        <span>${item}</span>
+        <span>${allergenLabel(item)}</span>
         ${isCustom ? `<button type="button" class="allergy-del-btn" title="マスターから削除" onclick="removeCustomAllergen(event, '${item}')">✕</button>` : ''}
       </label>`;
   }).join('');
@@ -972,30 +1001,21 @@ function renderQuickAddForms() {
   const count = parseInt(document.getElementById('qa-count').value, 10) || 1;
   const container = document.getElementById('qa-forms-container');
   let html = '';
-  const prefOpts = PREFECTURES.map(p => `<option value="${p}">${p}</option>`).join('');
   for (let i = 1; i <= count; i++) {
     const defaultPlaceholder = i === 1 ? '代表のお客様' : `お連れ様 ${i}`;
     html += `
       <div class="qa-person-card">
         <div class="flex justify-between items-center">
           <span style="font-weight:900; font-size:0.85rem;">👤 ${i}人目のお客様 ${i === 1 ? '(代表)' : ''}</span>
-          <input type="text" placeholder="🔍 過去カルテ検索" style="font-size:0.75rem; padding:2px 6px;" oninput="searchExistingUser(this, ${i})">
+          <label class="qa-search">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.5"/><path d="M13 13l4.5 4.5"/></svg>
+            <input type="text" placeholder="過去のカルテを検索" oninput="searchExistingUser(this, ${i})">
+          </label>
         </div>
         <input type="hidden" id="qa-user-id-${i}" value="">
-        <div style="display:grid; grid-template-columns: 1.5fr 1fr; gap:6px;">
-          <div>
-            <label class="form-label">お名前</label>
-            <input id="qa-pname-${i}" class="input-base" type="text" placeholder="${defaultPlaceholder}">
-          </div>
-          <div>
-            <label class="form-label">居住地域</label>
-            <select id="qa-pregion-${i}" class="input-base" onchange="handleRegionChange(this, 'qa-pregion-custom-${i}')">
-              ${prefOpts}
-            </select>
-            <input type="text" id="qa-pregion-custom-${i}" class="input-base" 
-                   style="margin-top:4px; display:none;" 
-                   placeholder="市区町村や海外名を入力">
-          </div>
+        <div>
+          <label class="form-label">お名前</label>
+          <input id="qa-pname-${i}" class="input-base" type="text" placeholder="${defaultPlaceholder}">
         </div>
 
         <div>
@@ -1047,18 +1067,6 @@ function searchExistingUser(inputEl, formIdx) {
   if (matched) {
     document.getElementById(`qa-user-id-${formIdx}`).value = matched.id;
     document.getElementById(`qa-pname-${formIdx}`).value = matched.name;
-    const isPref = PREFECTURES.filter(p => p !== "その他").includes(matched.region);
-    const selectEl = document.getElementById(`qa-pregion-${formIdx}`);
-    const customInput = document.getElementById(`qa-pregion-custom-${formIdx}`);
-    if (isPref) {
-      selectEl.value = matched.region;
-      customInput.style.display = "none";
-      customInput.value = "";
-    } else {
-      selectEl.value = "その他";
-      customInput.style.display = "block";
-      customInput.value = matched.region === "未登録" ? "" : matched.region;
-    }
     const normUserAllergies = matched.allergies.map(normalizeAllergenUI);
     normUserAllergies.forEach(a => {
       if (!allergenMaster.includes(a)) allergenMaster.push(a);
@@ -1073,9 +1081,6 @@ async function submitAdd() {
     const existingId = document.getElementById(`qa-user-id-${i}`).value || null;
     const inputEl = document.getElementById(`qa-pname-${i}`);
     const name = inputEl.value.trim() || (i === 1 ? '代表のお客様' : `お連れ様 ${i}`);
-    const regionSelect = document.getElementById(`qa-pregion-${i}`).value;
-    const customRegion = document.getElementById(`qa-pregion-custom-${i}`).value.trim();
-    const finalRegion = (regionSelect === "その他") ? (customRegion || "その他") : regionSelect;
     const rawChecked = [...document.querySelectorAll(`#qa-allergy-${i} input:checked`)].map(cb => cb.value);
     const checked = [...new Set(rawChecked.map(normalizeAllergenUI))];
     const hintVal = document.getElementById(`qa-hint-${i}`).value.trim();
@@ -1084,7 +1089,6 @@ async function submitAdd() {
     usersPayload.push({
       user_id: existingId,
       name: name,
-      region: finalRegion,
       allergies: checked,
       hint: finalHint
     });

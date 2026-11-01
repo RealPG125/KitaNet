@@ -94,7 +94,7 @@ def get_floor_status():
             WHERE end_datetime IN ('利用中', '会計中', '予約中')
         """).fetchall()
         tables_data = {}
-        for i in [1, 2, 3, "4A", "4B", 5, "A", "B", "C", "D", 8, 9, 10, "T1", "T2", "T3", "T4", "T5", "T6", "T7"]:
+        for i in [1, 2, 3, "4A", "4B", 5, "A", "B", "C", "D", 8, 9, 10, 11, 12, 13, "14A", "14B", 15, "T1", "T2", "T3", "T4", "T5", "T6", "T7"]:
             tables_data[i] = {
                 "sessionId": None, "type": "empty", "status": "empty",
                 "stayTime": None, "guestCount": 0, "userIds": [], "hasSpoken": False, "summary": ""
