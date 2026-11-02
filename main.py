@@ -54,9 +54,9 @@ class AssignRequest(BaseModel):
 @app.get("/api/waiting-queue")
 def get_waiting_queue():
     return [
-        {"queueId": "q-01", "guestsCount": 1, "userIds": ["u-0008"]},  # 鈴木様（そばアレルギー）
-        {"queueId": "q-02", "guestsCount": 1, "userIds": ["u-0009"]},  # 渡辺様（常連）
-        {"queueId": "q-03", "guestsCount": 1, "userIds": ["u-0010"]}   # 木村様（旅行）
+        {"queueId": "q-01", "guestsCount": 1, "userIds": ["u-0008"]},                # 鈴木様（そばアレルギー）
+        {"queueId": "q-02", "guestsCount": 2, "userIds": ["u-0011", "u-0012"]},      # 王様・李様（えびアレルギー）
+        {"queueId": "q-03", "guestsCount": 1, "userIds": ["u-0014"]}                 # 木村様（キウイアレルギー）
     ]
 @app.get("/api/users")
 def get_all_users():
@@ -254,7 +254,11 @@ def ensure_order_table():
                     "sess-002": [(6, 1, "提供済")],
                     "sess-003": [(3, 1, "提供済"), (4, 1, "注文中")],
                     "sess-004": [(1, 1, "提供済"), (2, 1, "提供済"), (5, 2, "提供済")],
-                    "sess-005": [(2, 1, "提供済"), (6, 1, "提供済")]}
+                    "sess-005": [(2, 1, "提供済"), (6, 1, "提供済")],
+                    "sess-010": [(3, 1, "提供済"), (6, 1, "注文中")],
+                    "sess-013": [(1, 2, "提供済"), (8, 2, "提供済"), (7, 1, "注文中")],
+                    "sess-014": [(1, 1, "提供済"), (2, 1, "提供済"), (3, 1, "提供済"), (6, 2, "注文中")],
+                    "sess-015": [(4, 1, "提供済"), (5, 2, "提供済"), (3, 2, "提供済")]}
             for sid, rows in demo.items():
                 if not conn.execute("SELECT 1 FROM TableSession WHERE id = ?", (sid,)).fetchone():
                     continue

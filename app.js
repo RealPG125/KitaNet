@@ -1,6 +1,9 @@
 const API_BASE = "http://127.0.0.1:8000/api";
+const REGION_UNKNOWN = "不明"; // 地域が分からないときの表示
+const regionLabel = r => (!r || r === "未登録") ? REGION_UNKNOWN : r;
+const regionCell = r => { const l = regionLabel(r); return l === REGION_UNKNOWN ? `<span class="text-muted">${l}</span>` : l; };
 const PREFECTURES = [
-  "愛媛県", "広島県", "香川県", "徳島県", "高知県", "岡山県", "山口県",
+  "不明", "愛媛県", "広島県", "香川県", "徳島県", "高知県", "岡山県", "山口県",
   "北海道", "青森県", "岩手県", "宮城県", "秋田県", "山形県", "福島県",
   "茨城県", "栃木県", "群馬県", "埼玉県", "千葉県", "東京都", "神奈川県",
   "新潟県", "富山県", "石川県", "福井県", "山梨県", "長野県", "岐阜県",
@@ -141,6 +144,7 @@ const FLOORS = {
     ]
   },
   '2F': {
+    fit: true,
     grid: [30.4, 28.45, 132, 56],
     size: [1100, 1085],
     bounds: [100, -30, 990, 1020],
@@ -149,9 +153,9 @@ const FLOORS = {
     tables: [
       ['8',164,268,64,48,{}], ['9',164,368,64,48,{}], ['10',164,464,64,48,{}], ['11',164,570,64,48,{}],
       ['12',558,518,64,48,{}],
-      ['13',882,700,128,48,{}],
-      ['14A',830,790,48,64,{}], ['14B',926,850,48,64,{}],
-      ['15',882,935,128,48,{}]
+      ['13',912,729,82,56,{}],
+      ['14A',824,799,41,56,{}], ['14B',933,884,41,50,{}],
+      ['15',843,914,80,56,{}]
     ]
   }
 };
@@ -253,6 +257,7 @@ function renderFloor() {
   });
   canvas.appendChild(plan);
   canvas.appendChild(buildZoomControls());
+  canvas.appendChild(buildLegend());
   fitPlan();
   refreshAllCards();
 }
@@ -308,6 +313,14 @@ function zoomBy(factor) {
 function resetView() {
   view = { z: 1, x: 0, y: 0 };
   fitPlan();
+}
+function buildLegend() {
+  const box = document.createElement('div');
+  box.className = 'floor-legend';
+  box.innerHTML = [['g', '利用中'], ['o', '接客中'], ['p', '会計中'], ['b', '予約']]
+    .map(([c, t]) => `<span class="lg lg-${c}"><i class="led"></i>${t}</span>`).join('') +
+    `<span class="lg lg-alg">⚠ アレルゲンあり</span>`;
+  return box;
 }
 function buildZoomControls() {
   const box = document.createElement('div');
@@ -388,13 +401,14 @@ function refreshCard(id) {
   if (t.type === 'reserved') {
     cls = 'seat-card is-reserved'; status = t.reserveTime || '予約';
   } else if (t.type === 'billing') {
-    cls = 'seat-card is-billing'; status = '会計中'; count = `${t.guestCount}名`;
+    cls = 'seat-card is-billing'; status = '会計中 🧾'; count = `${t.guestCount}名`;
   } else if (t.type === 'speaking') {
     cls = 'seat-card speaking'; status = '接客中 🎙️'; count = `${t.guestCount}名`;
   } else if (t.type === 'active') {
     cls = allAllergies.length ? 'seat-card has-allergy' : 'seat-card no-ai';
     status = '利用中'; count = `${t.guestCount}名`;
   }
+  if (allAllergies.length) cls += ' allergy'; // 状況とは独立した「アレルゲンあり」の印
   let maxShow = Math.min(6, Math.max(2, Math.floor(Number(iw) / (Number(ih) * .3))));
   if (fit) {
     const cap = Math.max(1, Math.floor((Number(iw) - 4) / (m * .25 + 2)));
@@ -403,7 +417,7 @@ function refreshCard(id) {
   const algs = allAllergies.slice(0, maxShow).map(a => fit ? tableAllergenImg(a) : allergenImg(a)).join('') +
     (allAllergies.length > maxShow ? `<span class="alg-more">+${allAllergies.length - maxShow}</span>` : '');
   el.className = cls + (selectedTable === id && selectedQueueId === null ? ' active' : '');
-  el.innerHTML = wrap(`<b class="c-tl">${id}</b><span class="c-tr">${count}</span><span class="c-mid">${status}</span><span class="c-bl">${algs}</span>`, fit ? fitVars(m, Number(iw), status) : '');
+  el.innerHTML = wrap(`<b class="c-tl">${id}</b><span class="c-tr">${count}</span><span class="c-mid"><i class="led"></i><em>${status}</em></span><span class="c-bl">${algs}</span>`, fit ? fitVars(m, Number(iw), status === '空席' ? status : status + '＿＿') : '');
 }
 function renderWaiting() {
   const container = document.getElementById('waiting-list');
@@ -789,10 +803,10 @@ function editorBody(p, ph = '') {
 document.getElementById('mg-body').innerHTML = editorBody('mg', '話題、趣味、好みの味付けなど');
 document.getElementById('lp-body').innerHTML = editorBody('lp');
 function renderUserForm(u, prefix) {
-  const currentRegion = u.region || "未登録";
+  const currentRegion = regionLabel(u.region);
   const isPrefecture = PREFECTURES.filter(p => p !== "その他").includes(currentRegion);
   const selectValue = isPrefecture ? currentRegion : "その他";
-  const customRegionValue = isPrefecture ? "" : (currentRegion === "その他" || currentRegion === "未登録" ? "" : currentRegion);
+  const customRegionValue = isPrefecture ? "" : (currentRegion === "その他" || currentRegion === REGION_UNKNOWN ? "" : currentRegion);
   const regionOptions = PREFECTURES.map(p => 
     `<option value="${p}" ${selectValue === p ? 'selected' : ''}>${p}</option>`
   ).join('');
@@ -1166,7 +1180,7 @@ function renderLedger(kw = '') {
       return `
       <tr>
         <td><strong>${u.name}</strong></td>
-        <td>${u.region || '未登録'}</td>
+        <td>${regionCell(u.region)}</td>
         <td>${u.count || 1}回</td>
         <td>${uAlgs.length ? uAlgs.map(a => allergenImg(a)).join(' ') : '<span class="text-muted">なし</span>'}</td>
         <td>
@@ -1186,7 +1200,7 @@ function renderLedger(kw = '') {
       return `
       <tr class="row-click" onclick="openLedgerEdit('${u.id}')">
         <td><strong>${u.name}</strong></td>
-        <td>${u.region || '未登録'}</td>
+        <td>${regionCell(u.region)}</td>
         <td>${u.count || 1}回</td>
         <td>${u.favs.length ? u.favs.map(f => `⭐${f}`).join('、') : '<span class="text-muted">なし</span>'}</td>
         <td>${uAlgs.length ? uAlgs.map(a => allergenImg(a)).join(' ') : '<span class="text-muted">なし</span>'}</td>

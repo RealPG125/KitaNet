@@ -595,3 +595,170 @@ body { background-color: #efe5cc; }
 /* ===== 対話まとめ：細くて読みにくい文字を標準の太さに ===== */
 .ai-box-head { font-weight: 800; }
 .ai-box-body { font-size: .88rem; font-weight: 500; line-height: 1.7; color: #1b1712; letter-spacing: .02em; }
+
+/* ===== 色の統一（色だけ変更）：青 → ホームの小豆がかった赤／待合受付を見やすく／吊り棒は木の色 ===== */
+.modal-header { background: linear-gradient(#a82d22, #7f1d15); }
+.modal-header .text-muted { color: #f1d9cf; }
+.modal-box .tab-btn.active { background: var(--kinari); color: #7f1d15; }
+.modal-box .tbl th, .modal-box .section-title { color: #7f1d15; }
+.modal-box .input-base:focus, .modal-box .ledger-search:focus, .modal-box .custom-allergy-input:focus { outline-color: #a82d22; }
+.panel-waiting { background: #e4d3aa; }
+.panel-waiting .panel-header {
+  background:
+    var(--wave-gold) 0 100%/38px 19px, var(--wave-gold) 19px calc(100% - 9px)/38px 19px,
+    linear-gradient(var(--ai), var(--navy-d));
+}
+.panel-waiting .panel-caption { color: #fff8e6; text-shadow: 0 2px 0 rgba(0,0,0,.55), 0 0 6px rgba(0,0,0,.35); }
+.panel-waiting .panel-header::before {
+  background: repeating-linear-gradient(90deg, #6a4526 0 16px, transparent 16px 54px), linear-gradient(#c9a46c, #a8814a);
+  background-size: auto, 100% 6px; background-repeat: repeat-x, no-repeat;
+}
+.panel-waiting::after { background: var(--wave-navy) 0 0/44px 22px, var(--wave-navy) 22px 11px/44px 22px; }
+
+/* ===== 待合受付：見出しから札を吊る小さい線を木の色に ===== */
+.panel-waiting .panel-header::after {
+  background: repeating-linear-gradient(90deg, transparent 0 calc(33.3% - 1px), #7a5632 calc(33.3% - 1px) 33.3%);
+}
+
+/* ===== 顧客台帳など：顧客台帳ボタン／待合受付の札と同じ赤に統一 ===== */
+.modal-header {
+  background: linear-gradient(180deg, #c8402f 0%, #9a2419 47%, #74160f 53%, #86190f 100%);
+  border-bottom: 3px solid var(--wood-d);
+  box-shadow: inset 0 2px 0 rgba(255,255,255,.28), inset 0 -1px 0 rgba(217,180,95,.85);
+}
+.modal-header h3 { text-shadow: 0 2px 0 rgba(0,0,0,.45); color: #fff8e6; }
+.modal-box .tbl th { background: #f1e2c0; color: #86190f; border-bottom: 2px solid #a82d22; }
+.modal-box .tbl-ledger tbody tr:hover { background: #fbe9dc; }
+.modal-box .tab-switch { border-color: rgba(255,248,230,.7); }
+.modal-box .tab-btn.active { background: #fff8e6; color: #86190f; }
+.modal-box .btn-primary { background: linear-gradient(#a82d22, #7f1d15); border-color: var(--wood-d); }
+.modal-box .btn-primary:hover { background: linear-gradient(#bd3626, #8c2218); }
+
+/* ===== 1階／2階の切り替え：選択中を赤＋金の札、非選択は地味な木目調で一目で区別 ===== */
+.floor-switch { background: #f3ead2; border: 2px solid var(--wood-d); border-radius: 7px; box-shadow: 0 2px 0 rgba(40,30,10,.3); }
+.panel-floor .floor-switch .tab-btn { display: inline-flex; align-items: center; justify-content: center; color: #6b5a3e; font-weight: 700; background: transparent; }
+.panel-floor .floor-switch .tab-btn:not(.active):hover { background: #e9dcb8; color: #4a2f18; }
+.panel-floor .floor-switch .tab-btn.active {
+  color: #fff; font-weight: 800; letter-spacing: .08em;
+  background: linear-gradient(180deg, #c8402f 0%, #9a2419 48%, #74160f 52%, #86190f 100%);
+  box-shadow: inset 0 0 0 2px #86190f, inset 0 0 0 3px #d9b45f;
+  text-shadow: 0 1px 0 rgba(0,0,0,.55);
+}
+.panel-floor .floor-switch .tab-btn.active::before { content: ""; width: 7px; height: 7px; margin-right: 7px; border-radius: 50%; background: #e8c46a; box-shadow: 0 0 0 1px rgba(0,0,0,.35); }
+
+/* ===== 新規受付の札：顧客台帳ボタンと同じ吊り木を、見出しから札まで下ろす ===== */
+.panel-waiting .btn-dashed { position: relative; overflow: visible; }
+.panel-waiting .btn-dashed::before {
+  content: ""; position: absolute; top: -19px; left: 26px; right: 26px; height: 19px;
+  border-left: 3px solid #4a2f18; border-right: 3px solid #4a2f18; pointer-events: none;
+}
+
+/* ===== 台帳／ごみ箱の切り替え：1階・2階と同じ札スタイル（選択中は青） ===== */
+.modal-box .tab-switch { background: #f3ead2; border: 2px solid var(--wood-d); border-radius: 7px; box-shadow: 0 2px 0 rgba(40,30,10,.3); }
+.modal-box .tab-switch .tab-btn { display: inline-flex; align-items: center; justify-content: center; padding: 6px 16px; color: #6b5a3e; font-weight: 700; background: transparent; }
+.modal-box .tab-switch .tab-btn:not(.active):hover { background: #e9dcb8; color: #4a2f18; }
+.modal-box .tab-switch .tab-btn.active {
+  color: #fff; font-weight: 800; letter-spacing: .06em;
+  background: linear-gradient(180deg, #2f4f84 0%, #1d2f4e 48%, #14213a 52%, #1a2c4c 100%);
+  box-shadow: inset 0 0 0 2px #14213a, inset 0 0 0 3px #d9b45f;
+  text-shadow: 0 1px 0 rgba(0,0,0,.55);
+}
+.modal-box .tab-switch .tab-btn.active::before { content: ""; width: 7px; height: 7px; margin-right: 7px; border-radius: 50%; background: #e8c46a; box-shadow: 0 0 0 1px rgba(0,0,0,.35); }
+
+/* ===== 1階／2階の切り替え：選択中は青（台帳タブと同じ） ===== */
+.panel-floor .floor-switch .tab-btn.active {
+  background: linear-gradient(180deg, #2f4f84 0%, #1d2f4e 48%, #14213a 52%, #1a2c4c 100%);
+  box-shadow: inset 0 0 0 2px #14213a, inset 0 0 0 3px #d9b45f;
+}
+
+/* ===== 卓の状況：デジタル表示のカプセル＋状況色のランプ ===== */
+.plan[data-floor] .s-in .c-mid {
+  display: inline-flex; align-items: center; gap: .35em; box-sizing: border-box;
+  padding: .16em .6em .16em .4em; border-radius: 999px;
+  font-size: var(--fs, calc(var(--m) * .17)); line-height: 1.15; letter-spacing: .04em;
+  color: #f3ead2; background: linear-gradient(#2c2823, #14110e);
+  border: 1px solid rgba(0,0,0,.55);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.14), 0 1px 0 rgba(255,255,255,.35);
+}
+.plan .c-mid em { font-style: normal; font-weight: 800; font-variant-numeric: tabular-nums; }
+.plan .c-mid .led {
+  --led: #8d8374; flex: none; width: .78em; height: .78em; border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, #fff 0 10%, var(--led) 42%, color-mix(in srgb, var(--led) 55%, #000) 100%);
+  box-shadow: 0 0 .55em .08em var(--led), inset 0 0 1px rgba(0,0,0,.5);
+}
+.plan .is-empty .c-mid .led { background: #5c554a; box-shadow: inset 0 1px 1px rgba(0,0,0,.6); }
+.plan .is-empty .c-mid { color: #b9ae98; }
+.plan .no-ai .c-mid .led, .plan .has-allergy .c-mid .led { --led: #4aa3ff; }
+.plan .speaking .c-mid .led { --led: #35d07f; animation: ledPulse 1.6s ease-in-out infinite; }
+.plan .is-billing .c-mid .led { --led: #ffa534; }
+.plan .is-reserved .c-mid .led { --led: #f5c84b; }
+@keyframes ledPulse { 50% { box-shadow: 0 0 .9em .2em var(--led), inset 0 0 1px rgba(0,0,0,.5); } }
+@media (prefers-reduced-motion: reduce) { .plan .speaking .c-mid .led { animation: none; } }
+
+/* ===== 色の役割を分離：状況＝カプセル＋薄い卓色／アレルゲン＝赤の枠と⚠／選択＝墨の四隅 ===== */
+/* 状況カプセル（薄い地＋フラットなランプ・影なし） */
+.plan[data-floor] .s-in .c-mid {
+  --pill: #e3f1e0; --pill-line: #b9d8b3; --pill-text: #1f4a2a;
+  background: var(--pill); border: 1px solid var(--pill-line); box-shadow: none; text-shadow: none; color: var(--pill-text);
+}
+.plan .c-mid .led, .floor-legend .led { box-shadow: none; background: var(--led); animation: none; }
+/* 利用中＝緑 */
+.plan[data-floor] .seat-card .c-mid .led { --led: #3f9a4f; }
+/* 接客中（会話中）＝橙 */
+.plan[data-floor] .seat-card.speaking .c-mid { --pill: #fde9d4; --pill-line: #f0c79c; --pill-text: #6a3a0c; }
+.plan[data-floor] .seat-card.speaking .c-mid .led { --led: #e8871e; animation: none; }
+/* 会計中＝藤（赤はアレルゲン専用なので使わない） */
+.plan[data-floor] .seat-card.is-billing .c-mid { --pill: #ece6f7; --pill-line: #cfc2e8; --pill-text: #43306b; }
+.plan[data-floor] .seat-card.is-billing .c-mid .led { --led: #7a5cb8; }
+/* 予約＝青 */
+.plan[data-floor] .seat-card.is-reserved .c-mid { --pill: #e3edf8; --pill-line: #bcd0ea; --pill-text: #20395c; }
+.plan[data-floor] .seat-card.is-reserved .c-mid .led { --led: #3b82d6; }
+/* 空席：元のテキスト表示（カプセル・ランプなし） */
+.plan[data-floor] .is-empty .s-in .c-mid {
+  display: block; padding: 0; gap: 0; border: none; border-radius: 0; background: none; box-shadow: none;
+  color: #7d7466; font-size: var(--fs, calc(var(--m) * .21)); font-weight: 700; letter-spacing: 0;
+}
+.plan .is-empty .c-mid .led { display: none; }
+.plan .is-empty .c-mid em { font-weight: 700; }
+
+/* 卓の枠は状況色を使わず中立に、背景だけ状況をほんのり示す */
+.plan .seat-card.no-ai, .plan .seat-card.has-allergy, .plan .seat-card.speaking, .plan .seat-card.is-reserved, .plan .seat-card.is-billing { border: 1.5px solid var(--line-d) !important; }
+.plan .seat-card.no-ai, .plan .seat-card.has-allergy { background: #f2f7ee !important; }
+.plan .seat-card.speaking { background: #fdf3e6 !important; }
+.plan .seat-card.is-billing { background: #f3eefa !important; }
+.plan .seat-card.is-reserved { background: #eaf1f9 !important; }
+/* アレルゲンあり：状況に関係なく赤の太枠＋右下に⚠（赤はこれだけに使う） */
+.plan .seat-card.allergy { border: 3px solid #b3362a !important; }
+.plan .seat-card.allergy:not(.is-empty)::after {
+  content: "⚠"; display: block; position: absolute; right: 3px; bottom: 1px; color: #b3362a;
+  font-size: calc(min(var(--w), var(--h)) * .24); line-height: 1; clip-path: none; background: none; width: auto; height: auto; padding: 0; border: none; writing-mode: horizontal-tb;
+  transform: rotate(calc(var(--rot, 0deg) * -1));
+}
+/* 選択中の四隅括り：卓の状況に合わせた色（赤はアレルゲン専用なので使わない） */
+.plan .tbl-holder:has(.seat-card.active)::after { --k: #6b5a3e; }                        /* 空席＝墨茶 */
+.plan .tbl-holder:has(.seat-card.active.no-ai)::after,
+.plan .tbl-holder:has(.seat-card.active.has-allergy)::after { --k: #2f8a43; }             /* 利用中＝緑 */
+.plan .tbl-holder:has(.seat-card.active.speaking)::after { --k: #e07a10; }                /* 接客中＝橙 */
+.plan .tbl-holder:has(.seat-card.active.is-billing)::after { --k: #6b4aa8; }              /* 会計中＝藤 */
+.plan .tbl-holder:has(.seat-card.active.is-reserved)::after { --k: #2f74c8; }             /* 予約＝青 */
+
+/* 凡例 */
+.floor-legend { position: absolute; left: 10px; bottom: 10px; z-index: 20; display: flex; flex-wrap: wrap; gap: 4px 8px; max-width: 360px; padding: 6px 9px; background: rgba(251,246,230,.94); border: 1px solid var(--line-d); border-radius: 6px; font-size: .72rem; font-weight: 700; color: #3b3226; pointer-events: none; }
+.floor-legend .lg { display: inline-flex; align-items: center; gap: 5px; padding: 1px 8px 1px 6px; border-radius: 999px; border: 1px solid var(--lg-line); background: var(--lg-bg); }
+.floor-legend .led { width: 8px; height: 8px; border-radius: 50%; }
+.floor-legend .lg-g { --lg-bg: #e3f1e0; --lg-line: #b9d8b3; } .floor-legend .lg-g .led { --led: #3f9a4f; }
+.floor-legend .lg-o { --lg-bg: #fde9d4; --lg-line: #f0c79c; } .floor-legend .lg-o .led { --led: #e8871e; }
+.floor-legend .lg-p { --lg-bg: #ece6f7; --lg-line: #cfc2e8; } .floor-legend .lg-p .led { --led: #7a5cb8; }
+.floor-legend .lg-b { --lg-bg: #e3edf8; --lg-line: #bcd0ea; } .floor-legend .lg-b .led { --led: #3b82d6; }
+.floor-legend .lg-alg { --lg-bg: #fff; --lg-line: #b3362a; color: #b3362a; padding-left: 8px; }
+
+/* ===== 凡例：1行に収める ===== */
+.floor-legend { flex-wrap: nowrap; white-space: nowrap; max-width: none; gap: 6px; padding: 5px 8px; font-size: .7rem; }
+
+/* ===== 壁と部屋の枠線の太さを統一（--wall-w を変えるだけで全体が変わる） =====
+   壁(SVG)は線の中心が座標上にあるため、部屋の枠も同じく「縁の中心」に揃えて重なっても太くならないようにする */
+.plan { --wall-w: 4px; }
+.plan-walls path { stroke-width: var(--wall-w); }
+.plan .facility { border: none; outline: var(--wall-w) solid #1b1b1b; outline-offset: calc(var(--wall-w) / -2); }
+.plan .facility.bare { outline: none; }
+.plan .facility.p { border: none; clip-path: inset(calc(var(--wall-w) * -1) calc(var(--wall-w) * -1) calc(var(--wall-w) / 2) calc(var(--wall-w) * -1)); }
