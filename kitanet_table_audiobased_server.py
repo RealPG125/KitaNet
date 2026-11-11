@@ -56,18 +56,21 @@ async def main():
         serverConfigPort = 50000
         uri = f"ws://{serverConfigAddress}:{serverConfigPort}/"
 
-        async with connect(uri) as websocket:
-            await websocket.send("REQINS")
+        try:
+            async with connect(uri) as websocket:
+                await websocket.send("REQINS")
 
-            while True:
-                response = await websocket.recv()
-                if (response[:6] == "ANSINS"):
-                    response = response[6:].split("/")
-                    serverAddress = response[0]
-                    serverPort = response[1]
-                    await websocket.close()
-                    print(f"got {serverAddress}/{serverPort}")
-                    break
+                while True:
+                    response = await websocket.recv()
+                    if (response[:6] == "ANSINS"):
+                        response = response[6:].split("/")
+                        serverAddress = response[0]
+                        serverPort = response[1]
+                        await websocket.close()
+                        print(f"got {serverAddress}/{serverPort}")
+                        break
+        except:
+            pass
 
         await asyncio.sleep(10)
         rtc = RTCInstance(debug = True, ip = serverAddress, port = serverPort)
