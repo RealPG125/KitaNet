@@ -505,7 +505,7 @@ class TTS:
         return instance
 
 class LLM:
-    def __init__(self, model: str = "llama3.2", systemPrompt: str | None = None, enableAudio: bool = True, tts: TTS | None = None, manual: bool = False, local: bool = True, intents: list[str] = []):
+    def __init__(self, model: str = "llama3.2", systemPrompt: str | None = None, enableAudio: bool = True, tts: TTS | None = None, manual: bool = False, local: bool = True, intents: list[str] = [], intentsThreshold: list[int] = []):
         import ollama
         self.ollama = ollama
         self.asyncClient = self.ollama.AsyncClient()
@@ -529,6 +529,7 @@ class LLM:
         self.model = model
         self.tts = tts
         self.intents = intents
+        self.intentsThreshold = intentsThreshold
         self._enableAudio = enableAudio
         self.systemPrompt = "Be a casual chatting company as a friendly chatbot in a restaurant. Users varies between 1 to 8 people, so keep the flow understandable for more people to follow. Reply in text only and do not use any formatting (bold, italic etc), unnecessary symbols, or emojis as the result will be used to invoke speech using a text-to-speech system. Most importantly, reply shortly, 4 sentences maximum if possible. When asked about something outside your general knowledge (such as events, restaurant menus, news etc.), absolutely do not answer and apologize (suggest asking the human workers instead) unless a system message is provided to supply context or information of said topic. But remember to not be too stiff and cheer up the conversation by showing curiosity, if the situation allows and it's something non-critical. Make sure to take account of possible typo / incoherent input due to speech-to-text inaccuracies, and apply fixes if deemed necessary to fit the context. Ask the user if you're not sure of the original sentence." if systemPrompt == None else systemPrompt
         self.intentPrompt = "Strictly answer in integer numbers. Evaluate the latest user conversation message and give a score ranging from 0 to 10 for each following user intents. Give one value for each intent entry, and separate each using a single space. Do not use period or any other symbols."
@@ -539,38 +540,41 @@ class LLM:
         supportsSystemPromptFlag = self.model not in ["openai.gpt-oss-120b-1:0", "openai.gpt-oss-20b-1:0", "arn:aws:bedrock:ap-northeast-1::foundation-model/amazon.nova-lite-v1:0"] 
 
         if (mode == "custom"):
-            compiledMessages = [{"role": "system" if supportsSystemPromptFlag else "user", "content": ((self.systemPrompt if instruction == None else instruction) + f" Use the language {language} and translate every other language into it so that it strictly contain only letters from the target language.") if self.local else [{"text": ("This is a system instruction. Instructions for this conversation: " if supportsSystemPromptFlag else "") + (self.systemPrompt if instruction == None else instruction) + f" Use the language {language} and translate every other language into it so that it strictly contain only letters from the target language."}]}]
+            compiledMessages = [{"role": "system" if supportsSystemPromptFlag else "user", "content": ((self.systemPrompt if instruction == None else instruction) + f" Use the language {language} and translate every other language into it so that it strictly contain only letters from the target language.") if self.local else [{"text": ("This is a system instruction. Instructions for this conversation: " if not supportsSystemPromptFlag else "") + (self.systemPrompt if instruction == None else instruction) + f" Use the language {language} and translate every other language into it so that it strictly contain only letters from the target language."}]}]
             compiledMessages.append({"role": "user", "content": message if self.local else [{"text": message}]})
             return compiledMessages
 
         if (mode == "chat"):
-            compiledMessages = [{"role": "system" if supportsSystemPromptFlag else "user", "content": ((self.systemPrompt if instruction == None else instruction) + f" Use the language {language} and translate every other language into it so that it strictly contain only letters from the target language.") if self.local else [{"text": ("This is a system instruction. Instructions for this conversation: " if supportsSystemPromptFlag else "") + (self.systemPrompt if instruction == None else instruction) + f" Use the language {language} and translate every other language into it so that it strictly contain only letters from the target language."}]}]
+            compiledMessages = [{"role": "system" if supportsSystemPromptFlag else "user", "content": ((self.systemPrompt if instruction == None else instruction) + f" Use the language {language} and translate every other language into it so that it strictly contain only letters from the target language.") if self.local else [{"text": ("This is a system instruction. Instructions for this conversation: " if not supportsSystemPromptFlag else "") + (self.systemPrompt if instruction == None else instruction) + f" Use the language {language} and translate every other language into it so that it strictly contain only letters from the target language."}]}]
             for item in info:
                 compiledMessages.append({"role": "system" if supportsSystemPromptFlag else "user", "content": f"Additional info: {item}" if self.local else [{"text": f"Additional info: {item}"}]})
         elif (mode == "intent"):
-            compiledMessages = [{"role": "system" if supportsSystemPromptFlag else "user", "content": (self.systemPrompt if instruction == None else instruction) if self.local else [{"text": ("The original instruction for this conversation is: " if supportsSystemPromptFlag else "") + f"'{(self.systemPrompt if instruction == None else instruction)}'"}]}]
+            # compiledMessages = [{"role": "system" if supportsSystemPromptFlag else "user", "content": (self.systemPrompt if instruction == None else instruction) if self.local else [{"text": ("The original instruction for this conversation is: " if supportsSystemPromptFlag else "") + f"'{(self.systemPrompt if instruction == None else instruction)}'"}]}]
+            compiledMessages = []
 
         if (mode == "intent"):
-            compiledMessages.append({"role": "system" if supportsSystemPromptFlag else "user", "content": (self.systemPrompt if instruction == None else instruction) if self.local else [{"text": ("This is a system instruction. Past instructions are for references only. Follow the instructions: " if supportsSystemPromptFlag else "") + self.intentPrompt}]})        
+            compiledMessages.append({"role": "system" if supportsSystemPromptFlag else "user", "content": (self.intentPrompt if instruction == None else instruction) if self.local else [{"text": ("This is a system instruction. Follow the instructions: " if supportsSystemPromptFlag else "") + self.intentPrompt}]})        
             for index, intent in enumerate(self.intents):
-                compiledMessages.append({"role": "system" if supportsSystemPromptFlag else "user", "content": (f"Intent {index}" + intent) if self.local else [{"text": f"Intent: {index}" + intent}]})            
+                compiledMessages.append({"role": "system" if supportsSystemPromptFlag else "user", "content": (f"Intent {index} " + intent) if self.local else [{"text": f"Intent: {index} " + intent}]})            
 
         for item in memory:
             compiledMessages.append({"role": "user", "content": item["user"] if self.local else [{"text": ("User sends the following message: " if supportsSystemPromptFlag else "") + item["user"]}]})
             compiledMessages.append({"role": "assistant", "content": item["response"] if self.local else [{"text": item["response"]}]})
-        compiledMessages.append({"role": "user", "content": message if self.local else [{"text": message}]})
+        compiledMessages.append({"role": "user", "content": f"Most recent message from user: {message}" if self.local else [{"text": f"Most recent message from user: {message}"}]})
 
         return compiledMessages
 
     async def get_response(self, info: list[str] = [], message: str | None = None, memory: list[dict[str, str]] = [], mode: str = "chat", language: str | None = None, instruction: str | None = None):
         compiledMessages = self.compile_message(info = info, message = message, memory = memory, mode = mode, language = language, instruction = instruction)
 
-        # print(compiledMessages)
+        print(f"{mode} mode\n{compiledMessages}")
 
         if (self.local):
-            response = self.ollama.chat(model = self.model, messages = compiledMessages, think = False)["message"]["content"] if message != None else "Empty input message"
+            response = self.ollama.chat(model = self.model, messages = compiledMessages)["message"]["content"] if message != None else "Empty input message"
         else:
             response = self.bedrockClient.converse(modelId = self.model, messages = compiledMessages)
+            # debug
+            print(response)
             try:
                 response = response["output"]["message"]["content"][1]["text"]
             except:
@@ -609,10 +613,11 @@ class LLM:
 
             response = ""
             responseSentence = ""
+
+            print(compiledMessages)
             
             async for chunk in await self.asyncClient.chat(model = self.model, messages = compiledMessages, stream = True, think = False):
                 responseChunk = chunk["message"]["content"]
-                print(responseChunk)
                 responseSentence += responseChunk
                 if (re.search(r'[.。!！？?\n]+', responseChunk)):
                     print(responseSentence)
@@ -633,9 +638,9 @@ class LLM:
         self.tts.stop_audio()
 
     @classmethod
-    async def create(cls, speakerInstance: Speaker | None = None, model: str = "llama3.2", systemPrompt: str | None = None, enableAudio: bool = True, manual: bool = False, externalSpeaker: bool = False, ttsMode: str = "edge", local: bool = True, intents: list[str] = []):
+    async def create(cls, speakerInstance: Speaker | None = None, model: str = "llama3.2", systemPrompt: str | None = None, enableAudio: bool = True, manual: bool = False, externalSpeaker: bool = False, ttsMode: str = "edge", local: bool = True, intents: list[str] = [], intentsThreshold: list[int] = []):
         tts = await TTS.create(speakerInstance = speakerInstance, manual = manual, externalSpeaker = externalSpeaker, mode = ttsMode, voiceModel = "auto") if enableAudio else None
-        instance = cls(model = model, systemPrompt = systemPrompt, enableAudio = enableAudio, tts = tts, manual = manual, local = local, intents = intents)
+        instance = cls(model = model, systemPrompt = systemPrompt, enableAudio = enableAudio, tts = tts, manual = manual, local = local, intents = intents, intentsThreshold = intentsThreshold)
         return instance
 
 class TableResponder:
@@ -725,21 +730,23 @@ class TableResponder:
         return (result[0], result[1])
 
     async def llm_process_info(self, message: str | None = None):
+        print(f"processing info from message: {message}")
         intentsResponse = await self._LLMInstance.get_text_response(message = message, memory = self._memory, mode = "intent")
+        print(f"raw intentsResponse: {intentsResponse}")
         intentsResponse = intentsResponse.split(" ")
         info = []
         menuInfo = None
         for item in self.userHistory:
             info.append(f"[User info] Name: {item[0]}, Topic: {item[1]}, Content: {item[2]}")
-        if (len(intentsResponse) == len(INTENTS)):
+        if (len(intentsResponse) == len(self._LLMInstance.intents)):
             # menu
-            if (returnTuple := kitanet_helper.succeeds(int, intentsResponse[0]))[0] and returnTuple[1] > INTENTS_THRESHOLD[0]:
+            if (returnTuple := kitanet_helper.succeeds(int, intentsResponse[0]))[0] and returnTuple[1] > self._LLMInstance.intentsThreshold[0]:
                 menuInfo = db.execute("select * from menu where availability = true;")
                 for item in menuInfo:
                     availability = (("Breakfast " if (int(item[7]) & 0b100) else "") + ("Lunch " if (int(item[7]) & 0b010) else "") + ("Dinner" if (int(item[7]) & 0b001) else ""))
                     info.append(f"[Menu info] Name: {item[1]}, Price in yen: {item[2]}, Stock = {item[4]}, Seasonal = {item[5]}, Description = {item[6]}, Available Time = {availability}")
             # worker
-            if (returnTuple := kitanet_helper.succeeds(int, intentsResponse[1]))[0] and returnTuple[1] > INTENTS_THRESHOLD[1]:
+            if (returnTuple := kitanet_helper.succeeds(int, intentsResponse[1]))[0] and returnTuple[1] > self._LLMInstance.intentsThreshold[1]:
                 workerInfo = db.execute("select * from workerdata where status = 'active';")
                 for item in workerInfo:
                     workerMemory = db.execute(f"select memory_topic, memory_content from workermemory where worker_id = {item[0]}")
@@ -748,12 +755,12 @@ class TableResponder:
                         workerMemoryString += f"[Topic: {memory[0]}, Content: {memory[1]}]"
                     info.append(f"[Worker info] Name: {item[1]}, Region: {item[2]}, Info: {workerMemoryString}")
             # localities
-            if (returnTuple := kitanet_helper.succeeds(int, intentsResponse[3]))[0] and returnTuple[1] > INTENTS_THRESHOLD[3]:
+            if (returnTuple := kitanet_helper.succeeds(int, intentsResponse[3]))[0] and returnTuple[1] > self._LLMInstance.intentsThreshold[3]:
                 localInfo = db.execute("select * from othersdata;")
                 for item in localInfo:
                     info.append(f"[Event info] Category: {item[1]}, Content: {item[3]}")
             # store user memory
-            if (returnTuple := kitanet_helper.succeeds(int, intentsResponse[4]))[0] and returnTuple[1] > INTENTS_THRESHOLD[4]:
+            if (returnTuple := kitanet_helper.succeeds(int, intentsResponse[4]))[0] and returnTuple[1] > self._LLMInstance.intentsThreshold[4]:
                 userMemory = await self.llm_format_user_memory(message = message)
                 usersName = [item[1] for item in self.users]
                 for item in userMemory:
@@ -761,12 +768,12 @@ class TableResponder:
                     self.userHistory.append((item[0], item[1], item[2]))
                     db.execute(f"insert into usermemory values ((select id from userdata where name = {user[1]}), {self.tableSessionId}, now(), null, now(), {item[1]}, {item[2]}, true);")
             # store conversation memory
-            if (returnTuple := kitanet_helper.succeeds(int, intentsResponse[5]))[0] and returnTuple[1] > INTENTS_THRESHOLD[5]:
+            if (returnTuple := kitanet_helper.succeeds(int, intentsResponse[5]))[0] and returnTuple[1] > self._LLMInstance.intentsThreshold[5]:
                 conversationMemory = await self.llm_format_conversation_memory(message = message)
                 self.conversationHistory.append((conversationMemory[0], conversationMemory[1]))
                 db.execute(f"insert into conversationmemory values ({self.tableSessionId}, now(), {conversationMemory[0]}, {conversationMemory[1]});")
             # store user preference
-            if (returnTuple := kitanet_helper.succeeds(int, intentsResponse[6]))[0] and returnTuple[1] > INTENTS_THRESHOLD[6]:
+            if (returnTuple := kitanet_helper.succeeds(int, intentsResponse[6]))[0] and returnTuple[1] > self._LLMInstance.intentsThreshold[6]:
                 if (menuInfo == None):
                     menuInfo = db.execute("select * from menu where availability = true;")
                 menuPool = []
@@ -822,7 +829,7 @@ class TableResponder:
                 if (message != ""):
                     # use audio_chat (aws / remote, local) or audio_chat_stream (local only)
                     info = await self.llm_process_info(message)
-                    response = await self._LLMInstance.audio_chat(info = info, message = message, language = self.transcriber.languageNoncontextual, speakerInstance = self._speaker, memory = self._memory)
+                    response = await self._LLMInstance.audio_chat_stream(info = info, message = message, language = self.transcriber.languageNoncontextual, speakerInstance = self._speaker, memory = self._memory)
                     self._add_memory(message = message, response = response)
                 print("finished responding")
                 self.transcriber.mic.ready = False
@@ -867,7 +874,7 @@ class TableResponder:
         self.previewTranscribeLanguage = self.transcriber.languageNoncontextual
         self.previewTranscribeText = self.transcriber.transcribeTextNoncontextual
 
-def find_item(target: str | None = None, pool: list[str] | None = None) -> tuple:
+def find_item(target: str | None = None, pool: list[str] | None = None) -> tuple[int, str]:
     match = difflib.get_close_matches(target, pool, n = 1)
     index = pool.index(match)
     return (index, match)
@@ -919,7 +926,7 @@ async def main():
     global occupiedPorts
     global db
     occupiedPorts = []
-    tables: list[TableResponder] = []
+    tables = []
     lastIP = "127.0.0.1"
     lastPort = 55555
 
@@ -929,7 +936,7 @@ async def main():
         db = DB(dbName = DB_NAME, dbUser = DB_USER, dbPassword = DB_PASSWORD)
 
         Transcriber.transcriptionLock = asyncio.Lock()
-        llm = await LLM.create(model = "openai.gpt-oss-120b-1:0", manual = False, externalSpeaker = True, ttsMode = "edge", local = False, intents = INTENTS) #qwen2.5:3b-instruct-q8_0
+        llm = await LLM.create(model = "openai.gpt-oss-120b-1:0", manual = False, externalSpeaker = True, ttsMode = "edge", local = False, intents = INTENTS, intentsThreshold = INTENTS_THRESHOLD) #qwen2.5:3b-instruct-q8_0
 
         ip = get_ip()
         ipList: list[str] = []
