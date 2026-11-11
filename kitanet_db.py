@@ -58,12 +58,17 @@ class DB:
                 raise
 
     def execute(self, command: str | None = None):
+        # print(f"executing {command}")
+        operation = command.split(" ")[0]
         if (command != None):
             with self._connection.cursor() as cursor:
                 cursor.execute(command)
-                results = cursor.fetchall()
-        return results
-
+                if (operation.lower() == "select"):
+                    results = cursor.fetchall()
+                    return results
+                else:
+                    self._connection.commit()
+                
     def close(self):
         self._connection.close()
 
@@ -73,7 +78,8 @@ def main():
         while (command[-1] != ";"):
             command += input("> ")
         result = db.execute(command)
-        print(result)
+        for item in result:
+            print(item)
     db.close()
 
 if __name__ == "__main__":
