@@ -57,12 +57,12 @@ class DB:
                 self._tunnel.stop()
                 raise
 
-    def execute(self, command: str | None = None):
-        # print(f"executing {command}")
+    def execute(self, command: str | None = None, *params):
+        print(f"executing {command} with params {params}")
         operation = command.split(" ")[0]
         if (command != None):
             with self._connection.cursor() as cursor:
-                cursor.execute(command)
+                cursor.execute(command, params = params)
                 if (operation.lower() == "select"):
                     results = cursor.fetchall()
                     return results
