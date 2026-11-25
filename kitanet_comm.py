@@ -107,7 +107,7 @@ class RTCInstance:
 
             while (self.get_state("connectionstate") != "connected"):
                 if (self.enableDebug): print(f"CommsPort instance {self.instanceID} autoconfig: Waiting connection, currently {self.get_state('connectionstate')}")
-                await asyncio.sleep(0.1)
+                await asyncio.sleep(1)
 
             server.close()
             await server.wait_closed()
@@ -260,7 +260,11 @@ class RTCInstance:
 
     def get_queue(self, channelName: str, block: bool = False):
         if (self.enableDebug): print(f"CommsPort instance {self.instanceID}: Getting queue item from channel {channelName}")
-        return self.queues[channelName].get(block = block, timeout = 5)
+        try:
+            item = self.queues[channelName].get(block = block, timeout = 5)
+        except queue.Empty:
+            return None
+        return item
 
     def queue_has_item(self, channelName: str) -> bool:
         return not self.queues[channelName].empty()
@@ -270,7 +274,7 @@ class RTCInstance:
 
     async def drain_queue_to_storage(self, channelName: str, eofString: str = "EOF", block: bool = True):
         while ((item := self.get_queue(channelName = channelName, block = block)) != eofString):
-            if (self.enableDebug): print(f"CommsPort instance {self.instanceID}: Draining item {item}")
+            if (self.enableDebug and item != None): print(f"CommsPort instance {self.instanceID}: Draining item {item}")
             self.storage[channelName].append(item)
             
 async def main():

@@ -33,12 +33,12 @@ class Mic:
             index: self._pa.get_device_info_by_index(index) for index in range(self._pa.get_device_count())
             if self._pa.get_device_info_by_index(index)["maxInputChannels"] > 0
         } if not useRTC else None
+        self.ready = False
         if (manual and not useRTC):
             self.start_manual_on_device()
         elif (not useRTC):
             self.start_on_device(sampleRate = sampleRate, deviceIndex = deviceIndex, chunkDuration = chunkDuration, flatten = flatten, denoise = denoise, stem = stem)
-        self.ready = False
-
+        
     def start_on_device(self, sampleRate: int | None = None, deviceIndex: int | None = None, chunkDuration: int | float = 0.5, flatten: bool = True, denoise: bool = True, stem: bool = False):
         self.deviceIndex = None if self._pa == None else int(self._pa.get_default_input_device_info()["index"]) if deviceIndex == None else deviceIndex
         self.sampleRate = sampleRate if (sampleRate != None or self._pa == None) else int(self._pa.get_device_info_by_index(self.deviceIndex)["defaultSampleRate"])

@@ -1,0 +1,1 @@
+ssh -i "key/tabusaleadingedge.pem" ubuntu@ec2-57-180-15-226.ap-northeast-1.compute.amazonaws.com
