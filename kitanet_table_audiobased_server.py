@@ -54,7 +54,11 @@ async def main():
         serverPort = 55555
         serverConfigAddress = "127.0.0.1"
         serverConfigPort = 50000
+
+        serverConfigAddress = input("Server IP address: ")
+
         uri = f"ws://{serverConfigAddress}:{serverConfigPort}/"
+
 
         try:
             async with connect(uri) as websocket:
