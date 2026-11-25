@@ -682,13 +682,13 @@ class TableResponder:
                     pass
 
     def get_users(self, db: DB):
-        self.users = db.execute(f"select * from userdata where id = (select user_id from tablesessionmember where table_session_id = {table.tableSessionId});")
+        self.users = db.execute(f"select * from userdata where id = (select user_id from tablesessionmember where table_session_id = UUID('{table.tableSessionId}'));")
 
     def get_user_history(self, db: DB):
         self.userHistory = db.execute(f"select distinct on (name) name, memory_topic, memory_content from usermemory natural join userdata where user_id in (select user_id from tablesessionmember where table_session_id = {table.tableSessionId}) and expiration_datetime > now();")
 
     def get_history(self, db: DB):
-        self.conversationHistory = db.execute(f"select memory_topic, memory_content from conversationmemory where table_session_id = {self.tableSessionId};")
+        self.conversationHistory = db.execute(f"select memory_topic, memory_content from conversationmemory where table_session_id = UUID('{self.tableSessionId}');")
 
     def set_user_history(self, db: DB, name: str | None = None, topic: str | None = None, content: str | None = None, ):
         if (content != None and user != None):
@@ -749,7 +749,7 @@ class TableResponder:
             if (returnTuple := kitanet_helper.succeeds(int, intentsResponse[1]))[0] and returnTuple[1] > self._LLMInstance.intentsThreshold[1]:
                 workerInfo = db.execute("select * from workerdata where status = 'active';")
                 for item in workerInfo:
-                    workerMemory = db.execute(f"select memory_topic, memory_content from workermemory where worker_id = {item[0]}")
+                    workerMemory = db.execute(f"select memory_topic, memory_content from workermemory where worker_id = UUID('{item[0]}')")
                     workerMemoryString = ""
                     for memory in workerMemory:
                         workerMemoryString += f"[Topic: {memory[0]}, Content: {memory[1]}]"
@@ -829,7 +829,7 @@ class TableResponder:
                 if (message != ""):
                     # use audio_chat (aws / remote, local) or audio_chat_stream (local only)
                     info = await self.llm_process_info(message)
-                    response = await self._LLMInstance.audio_chat_stream(info = info, message = message, language = self.transcriber.languageNoncontextual, speakerInstance = self._speaker, memory = self._memory)
+                    response = await self._LLMInstance.audio_chat(info = info, message = message, language = self.transcriber.languageNoncontextual, speakerInstance = self._speaker, memory = self._memory)
                     self._add_memory(message = message, response = response)
                 print("finished responding")
                 self.transcriber.mic.ready = False
