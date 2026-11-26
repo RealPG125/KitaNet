@@ -11,6 +11,7 @@ import re
 import boto3
 import difflib
 import json
+import subprocess
 
 from faster_whisper import WhisperModel
 from scipy.signal import resample_poly
@@ -45,6 +46,8 @@ DB_USER = os.getenv("DB_USER")
 DB_PASSWORD = os.getenv("DB_PASSWORD")
 PYANNOTE_TOKEN = os.getenv("PYANNOTE_TOKEN")
 
+AWS_PROFILE_NAME = os.getenv("AWS_PROFILE_NAME")
+
 MAX_BUFFER_DURATION = 20
 SILENCE_THRESHOLD = 0.025
 LLM_TRIGGER_SILENCE_DURATION = 1.0
@@ -63,7 +66,7 @@ INTENTS = ["Does the user wants to know about this restaurant's menu?",
            "Does the latest user query has any non-sensitive personal information (quirks, hobbies etc.) specific to the user worth storing for better and more enjoyable future interactions, or for the ease of communication with the workers? Only score if the information is identifiable (has clear names as subject for example).",
            "Does the latest user query has any non-sensitive conversational information that's substantial enough to be stored separately in addition to the limited conversation history, or for the ease of communication with the workers?",
            "Does the user actively show a preference of a certain menu?"]
-INTENTS_THRESHOLD = [6, 5, 5, 5, 8, 5, 7]
+INTENTS_THRESHOLD = [6, 5, 5, 5, -1, 5, 7]
 
 class WhisperObject:
     models = ["tiny", "base", "small", "medium", "large-v3"]
@@ -534,7 +537,13 @@ class LLM:
         self.systemPrompt = "Be a casual chatting company as a friendly chatbot in a restaurant. Users varies between 1 to 8 people, so keep the flow understandable for more people to follow. Reply in text only and do not use any formatting (bold, italic etc), unnecessary symbols, or emojis as the result will be used to invoke speech using a text-to-speech system. Most importantly, reply shortly, 4 sentences maximum if possible. When asked about something outside your general knowledge (such as events, restaurant menus, news etc.), absolutely do not answer and apologize (suggest asking the human workers instead) unless a system message is provided to supply context or information of said topic. But remember to not be too stiff and cheer up the conversation by showing curiosity, if the situation allows and it's something non-critical. Make sure to take account of possible typo / incoherent input due to speech-to-text inaccuracies, and apply fixes if deemed necessary to fit the context. Ask the user if you're not sure of the original sentence." if systemPrompt == None else systemPrompt
         self.intentPrompt = "Strictly answer in integer numbers. Evaluate the latest user conversation message and give a score ranging from 0 to 10 for each following user intents. Give one value for each intent entry, and separate each using a single space. Do not use period or any other symbols."
         self.response = None
-        self.bedrockClient = boto3.client("bedrock-runtime", region_name = "ap-northeast-1", aws_access_key_id = AWS_ACCESS_KEY_ID, aws_secret_access_key = AWS_SECRET_ACCESS_KEY, aws_session_token = AWS_SESSION_TOKEN) 
+
+        subprocess.run(["aws", "sso", "login", "--profile", AWS_PROFILE_NAME], check = True)
+        self.bedrockSession = boto3.Session(profile_name = AWS_PROFILE_NAME)
+        try:
+            self.bedrockClient = self.bedrockSession.client("bedrock-runtime", region_name = "ap-northeast-1") 
+        except:
+            self.bedrockClient = boto3.client("bedrock-runtime", region_name = "ap-northeast-1", aws_access_key_id = AWS_ACCESS_KEY_ID, aws_secret_access_key = AWS_SECRET_ACCESS_KEY, aws_session_token = AWS_SESSION_TOKEN)     
 
     def compile_message(self, info: list[str] = [], message: str | None = None, memory: list[dict[str, str]] = [], mode: str = "chat", language: str | None = None, instruction: str | None = None):
         supportsSystemPromptFlag = self.model not in ["openai.gpt-oss-120b-1:0", "openai.gpt-oss-20b-1:0", "arn:aws:bedrock:ap-northeast-1::foundation-model/amazon.nova-lite-v1:0"] 
@@ -685,18 +694,18 @@ class TableResponder:
         self.users = db.execute(f"select * from userdata where id = (select user_id from tablesessionmember where table_session_id = UUID('{table.tableSessionId}'));")
 
     def get_user_history(self, db: DB):
-        self.userHistory = db.execute(f"select distinct on (name) name, memory_topic, memory_content from usermemory natural join userdata where user_id in (select user_id from tablesessionmember where table_session_id = {table.tableSessionId}) and expiration_datetime > now();")
+        self.userHistory = db.execute(f"select distinct on (name) name, memory_topic, memory_content from usermemory natural join userdata where user_id in (select user_id from tablesessionmember where table_session_id = UUID('{table.tableSessionId}')) and expiration_datetime > now();")
 
     def get_history(self, db: DB):
         self.conversationHistory = db.execute(f"select memory_topic, memory_content from conversationmemory where table_session_id = UUID('{self.tableSessionId}');")
 
     def set_user_history(self, db: DB, name: str | None = None, topic: str | None = None, content: str | None = None, ):
         if (content != None and user != None):
-            db.execute(f"insert into usermemory values ((select id from userdata where name = {name}), {self.tableSessionId}, now(), null, now(), {topic if topic != None else "null"}, {content}, true);")
+            db.execute(f"insert into usermemory values ((select id from userdata where name = {name}), UUID('{self.tableSessionId}'), now(), null, now(), '{topic if topic != None else 'null'}', '{content}', true);")
 
     def set_conversation_history(self, db: DB, topic: str | None = None, content: str | None = None):
         if (content != None):
-            db.execute(f"insert into conversationmemory values ({self.tableSessionId}, now(), {topic if topic != None else null}, {content})")
+            db.execute(f"insert into conversationmemory values (UUID('{self.tableSessionId}'), now(), '{topic if topic != None else null}', '{content}')")
 
     async def llm_match_item(self, target: str | None = None, pool: list[str] = []) -> tuple:
         poolString = ""
@@ -713,7 +722,7 @@ class TableResponder:
         return result
     
     async def llm_format_user_memory(self, message: str | None = None) -> list[tuple[str, str]]:
-        result = await self._LLMInstance.get_text_response(message = message, mode = "custom", language = "en", instruction = "Summarize non-sensitive personal information (hobbies etc.) that you can get judging from this message and determine the subject's name. Output the subject's name first and the summary with the following format: 'Name1>Topic=Content | Name2>Topic=Content | (...)'. Summarize multiple users if necessary.")
+        result = await self._LLMInstance.get_text_response(message = message, mode = "custom", language = "en", instruction = "Summarize non-sensitive personal information (hobbies etc.) that you can get judging from this message and determine the subject's name. Output the subject's name first and the summary with the following format: 'Name1>Topic=Content'. Summarize multiple users if necessary. Here's the user message: ")
         result = result.split("|")
         userMemory = []
         for item in result:
@@ -761,28 +770,34 @@ class TableResponder:
                     info.append(f"[Event info] Category: {item[1]}, Content: {item[3]}")
             # store user memory
             if (returnTuple := kitanet_helper.succeeds(int, intentsResponse[4]))[0] and returnTuple[1] > self._LLMInstance.intentsThreshold[4]:
-                userMemory = await self.llm_format_user_memory(message = message)
-                usersName = [item[1] for item in self.users]
-                for item in userMemory:
-                    user = await self.llm_match_item(target = item[0], pool = usersName)
-                    self.userHistory.append((item[0], item[1], item[2]))
-                    db.execute(f"insert into usermemory values ((select id from userdata where name = {user[1]}), {self.tableSessionId}, now(), null, now(), {item[1]}, {item[2]}, true);")
+                print("STORE USER MEMORY")
+                try:
+                    userMemory = await self.llm_format_user_memory(message = message)
+                    print(f"MEMORY: {userMemory}")
+                    # usersName = [item[1] for item in self.users]
+                    for item in userMemory:
+                        # user = await self.llm_match_item(target = item[0], pool = usersName)
+                        self.userHistory.append((item[0], item[1], item[2]))
+                    db.execute(f"insert into usermemory select A.user_id, UUID('{self.tableSessionId}'), now(), null, now(), '{item[1]}', '{item[2]}', true from tablesessionmembers as A where A.table_session_id = UUID('{self.tableSessionId}');")
+                except:
+                    pass
             # store conversation memory
             if (returnTuple := kitanet_helper.succeeds(int, intentsResponse[5]))[0] and returnTuple[1] > self._LLMInstance.intentsThreshold[5]:
                 conversationMemory = await self.llm_format_conversation_memory(message = message)
                 self.conversationHistory.append((conversationMemory[0], conversationMemory[1]))
-                db.execute(f"insert into conversationmemory values ({self.tableSessionId}, now(), {conversationMemory[0]}, {conversationMemory[1]});")
+                db.execute(f"insert into conversationmemory values (UUID('{self.tableSessionId}'), now(), {conversationMemory[0]}, {conversationMemory[1]});")
             # store user preference
             if (returnTuple := kitanet_helper.succeeds(int, intentsResponse[6]))[0] and returnTuple[1] > self._LLMInstance.intentsThreshold[6]:
-                if (menuInfo == None):
-                    menuInfo = db.execute("select * from menu where availability = true;")
-                menuPool = []
-                for item in menuInfo:
-                    menuPool.append(item[1])
+                # if (menuInfo == None):
+                #     menuInfo = db.execute("select * from menu where availability = true;")
+                # menuPool = []
+                # for item in menuInfo:
+                #     menuPool.append(item[1])
 
-                # handle separate prompt for asking name / nickname, consider reconstructing preference saving function to include past conversations
-                self.llm_filter_pool(pool = menuPool, source = message)
-                # db.execute(f"insert into usermenupreference values ();")
+                # # handle separate prompt for asking name / nickname, consider reconstructing preference saving function to include past conversations
+                # self.llm_filter_pool(pool = menuPool, source = message)
+                # # db.execute(f"insert into usermenupreference values ();")
+                pass
 
         print(intentsResponse)
         return info
@@ -828,7 +843,10 @@ class TableResponder:
                 message = self.transcriber.transcribeTextNoncontextual
                 if (message != ""):
                     # use audio_chat (aws / remote, local) or audio_chat_stream (local only)
-                    info = await self.llm_process_info(message)
+                    try:
+                        info = await self.llm_process_info(message)
+                    except:
+                        info = ["Info fetching failed"]
                     response = await self._LLMInstance.audio_chat(info = info, message = message, language = self.transcriber.languageNoncontextual, speakerInstance = self._speaker, memory = self._memory)
                     self._add_memory(message = message, response = response)
                 print("finished responding")
@@ -911,7 +929,7 @@ async def instance_server_task_loop(llmInstance: LLM, serverAddress: str, server
         served = False
         print("served, initializing responder")
         occupiedPorts.append(lastPort)
-        table = TableResponder(manual = False, llmInstance = llmInstance, whisperModelSize = "small", whisperDevice = "cuda", whisperComputeType = "float16", micChunkDuration = 1.0, micFlatten = True, micDenoise = False, RTCIP = lastIP, RTCPort = lastPort, transcriberBeamSize = 2, transcriberDiarization = False, transcriberFilter = True, transcriberSplitParts = False, transcriberUseContextual = 0)
+        table = TableResponder(manual = False, llmInstance = llmInstance, whisperModelSize = "base", whisperDevice = "cuda", whisperComputeType = "float16", micChunkDuration = 1.0, micFlatten = True, micDenoise = False, RTCIP = lastIP, RTCPort = lastPort, transcriberBeamSize = 2, transcriberDiarization = False, transcriberFilter = True, transcriberSplitParts = False, transcriberUseContextual = 0)
         print(f"assigned port {lastPort}")
         await table.init_RTC()
         print("finished init rtc")
