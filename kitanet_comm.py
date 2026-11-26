@@ -272,7 +272,7 @@ class RTCInstance:
     def get_state(self, stateName: str):
         return self.states[stateName]
 
-    async def drain_queue_to_storage(self, channelName: str, eofString: str = "EOF", block: bool = True):
+    async def drain_queue_to_storage(self, channelName: str, eofString: str = "EOF", block: bool = False):
         while ((item := self.get_queue(channelName = channelName, block = block)) != eofString):
             if (self.enableDebug and item != None): print(f"CommsPort instance {self.instanceID}: Draining item {item}")
             self.storage[channelName].append(item)
