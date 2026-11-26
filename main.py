@@ -11,6 +11,7 @@ import re
 import boto3
 import difflib
 import json
+import subprocess
 
 from faster_whisper import WhisperModel
 from scipy.signal import resample_poly
@@ -44,6 +45,8 @@ DB_NAME = os.getenv("DB_NAME")
 DB_USER = os.getenv("DB_USER")
 DB_PASSWORD = os.getenv("DB_PASSWORD")
 PYANNOTE_TOKEN = os.getenv("PYANNOTE_TOKEN")
+
+AWS_PROFILE_NAME = os.getenv("AWS_PROFILE_NAME")
 
 MAX_BUFFER_DURATION = 20
 SILENCE_THRESHOLD = 0.025
@@ -534,7 +537,13 @@ class LLM:
         self.systemPrompt = "Be a casual chatting company as a friendly chatbot in a restaurant. Users varies between 1 to 8 people, so keep the flow understandable for more people to follow. Reply in text only and do not use any formatting (bold, italic etc), unnecessary symbols, or emojis as the result will be used to invoke speech using a text-to-speech system. Most importantly, reply shortly, 4 sentences maximum if possible. When asked about something outside your general knowledge (such as events, restaurant menus, news etc.), absolutely do not answer and apologize (suggest asking the human workers instead) unless a system message is provided to supply context or information of said topic. But remember to not be too stiff and cheer up the conversation by showing curiosity, if the situation allows and it's something non-critical. Make sure to take account of possible typo / incoherent input due to speech-to-text inaccuracies, and apply fixes if deemed necessary to fit the context. Ask the user if you're not sure of the original sentence." if systemPrompt == None else systemPrompt
         self.intentPrompt = "Strictly answer in integer numbers. Evaluate the latest user conversation message and give a score ranging from 0 to 10 for each following user intents. Give one value for each intent entry, and separate each using a single space. Do not use period or any other symbols."
         self.response = None
-        self.bedrockClient = boto3.client("bedrock-runtime", region_name = "ap-northeast-1", aws_access_key_id = AWS_ACCESS_KEY_ID, aws_secret_access_key = AWS_SECRET_ACCESS_KEY, aws_session_token = AWS_SESSION_TOKEN) 
+
+        subprocess.run(["aws", "sso", "login", "--profile", AWS_PROFILE_NAME], check = True)
+        self.bedrockSession = boto3.Session(profile_name = AWS_PROFILE_NAME)
+        try:
+            self.bedrockClient = self.bedrockSession.client("bedrock-runtime", region_name = "ap-northeast-1") 
+        except:
+            self.bedrockClient = boto3.client("bedrock-runtime", region_name = "ap-northeast-1", aws_access_key_id = AWS_ACCESS_KEY_ID, aws_secret_access_key = AWS_SECRET_ACCESS_KEY, aws_session_token = AWS_SESSION_TOKEN)     
 
     def compile_message(self, info: list[str] = [], message: str | None = None, memory: list[dict[str, str]] = [], mode: str = "chat", language: str | None = None, instruction: str | None = None):
         supportsSystemPromptFlag = self.model not in ["openai.gpt-oss-120b-1:0", "openai.gpt-oss-20b-1:0", "arn:aws:bedrock:ap-northeast-1::foundation-model/amazon.nova-lite-v1:0"] 
@@ -692,7 +701,7 @@ class TableResponder:
 
     def set_user_history(self, db: DB, name: str | None = None, topic: str | None = None, content: str | None = None, ):
         if (content != None and user != None):
-            db.execute(f"insert into usermemory values ((select id from userdata where name = {name}), UUID('{self.tableSessionId}'), now(), null, now(), '{topic if topic != None else "null"}', '{content}', true);")
+            db.execute(f"insert into usermemory values ((select id from userdata where name = {name}), UUID('{self.tableSessionId}'), now(), null, now(), '{topic if topic != None else 'null'}', '{content}', true);")
 
     def set_conversation_history(self, db: DB, topic: str | None = None, content: str | None = None):
         if (content != None):
